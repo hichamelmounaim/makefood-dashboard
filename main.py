@@ -68,44 +68,124 @@ def get_recipes_data() -> List[dict]:
             return data
     except Exception as e:
         print("Error fetching recipes from GitHub raw:", e)
-        return recipes_cache.get("data", [])
+        # Fallback to local if running in container / local repo
+        local_path = "/app/data/recipes.json"
+        if not os.path.exists(local_path):
+            local_path = "D:/recipe-sites/make-food.com/src/data/recipes.json"
+        if os.path.exists(local_path):
+            with open(local_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                recipes_cache["data"] = data
+                recipes_cache["last_loaded"] = now
+                return data
+        return recipes_cache["data"]
+
+def push_recipes_to_github_and_redeploy(all_recipes: list, commit_message: str):
+    """Saves recipes array to GitHub main branch and triggers Coolify rebuild."""
+    recipes_cache["data"] = all_recipes
+    recipes_cache["last_loaded"] = time.time()
+
+    gh_h = {
+        "Authorization": f"token {CONFIG['GITHUB_TOKEN']}",
+        "Accept": "application/vnd.github.v3+json",
+        "Content-Type": "application/json"
+    }
+
+    # 1. Get latest commit SHA
+    req_c = urllib.request.Request(f"https://api.github.com/repos/{CONFIG['REPO_NAME']}/commits/main", headers=gh_h)
+    with urllib.request.urlopen(req_c) as r_c:
+        commit_info = json.loads(r_c.read().decode("utf-8"))
+        latest_commit_sha = commit_info["sha"]
+
+    # 2. Create blob
+    full_json_str = json.dumps(all_recipes, ensure_ascii=False)
+    blob_payload = {"content": full_json_str, "encoding": "utf-8"}
+    req_b = urllib.request.Request(f"https://api.github.com/repos/{CONFIG['REPO_NAME']}/git/blobs", data=json.dumps(blob_payload).encode("utf-8"), headers=gh_h, method="POST")
+    with urllib.request.urlopen(req_b) as r_b:
+        blob_sha = json.loads(r_b.read().decode("utf-8"))["sha"]
+
+    # 3. Create tree
+    tree_payload = {
+        "base_tree": latest_commit_sha,
+        "tree": [{
+            "path": "src/data/recipes.json",
+            "mode": "100644",
+            "type": "blob",
+            "sha": blob_sha
+        }]
+    }
+    req_t = urllib.request.Request(f"https://api.github.com/repos/{CONFIG['REPO_NAME']}/git/trees", data=json.dumps(tree_payload).encode("utf-8"), headers=gh_h, method="POST")
+    with urllib.request.urlopen(req_t) as r_t:
+        tree_sha = json.loads(r_t.read().decode("utf-8"))["sha"]
+
+    # 4. Create commit
+    commit_payload = {
+        "message": commit_message,
+        "tree": tree_sha,
+        "parents": [latest_commit_sha]
+    }
+    req_cm = urllib.request.Request(f"https://api.github.com/repos/{CONFIG['REPO_NAME']}/git/commits", data=json.dumps(commit_payload).encode("utf-8"), headers=gh_h, method="POST")
+    with urllib.request.urlopen(req_cm) as r_cm:
+        new_commit_sha = json.loads(r_cm.read().decode("utf-8"))["sha"]
+
+    # 5. Update ref
+    ref_payload = {"sha": new_commit_sha, "force": False}
+    req_ref = urllib.request.Request(f"https://api.github.com/repos/{CONFIG['REPO_NAME']}/git/refs/heads/main", data=json.dumps(ref_payload).encode("utf-8"), headers=gh_h, method="PATCH")
+    with urllib.request.urlopen(req_ref):
+        pass
+
+    # 6. Trigger Coolify redeployment
+    coolify_h = {"Authorization": f"Bearer {CONFIG['COOLIFY_TOKEN']}", "Content-Type": "application/json"}
+    req_dep = urllib.request.Request(f"{CONFIG['COOLIFY_URL']}/api/v1/deploy?uuid={CONFIG['MAKEFOOD_COOLIFY_UUID']}", headers=coolify_h, method="POST")
+    try:
+        urllib.request.urlopen(req_dep)
+    except Exception as e:
+        print("Note: Coolify deploy trigger exception:", e)
 
 def sign_session(username: str) -> str:
-    sig = hmac.new(CONFIG["SECRET_KEY"].encode("utf-8"), username.encode("utf-8"), hashlib.sha256).hexdigest()
+    sig = hmac.new(CONFIG["SECRET_KEY"].encode(), username.encode(), hashlib.sha256).hexdigest()
     return f"{username}:{sig}"
 
-def verify_session(cookie: Optional[str]) -> bool:
-    if not cookie or ":" not in cookie:
-        return False
-    user, sig = cookie.split(":", 1)
-    if user != CONFIG["DASH_USER"]:
-        return False
-    expected = hmac.new(CONFIG["SECRET_KEY"].encode("utf-8"), user.encode("utf-8"), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(sig, expected)
+def verify_session(token: str) -> Optional[str]:
+    try:
+        username, sig = token.split(":")
+        expected = hmac.new(CONFIG["SECRET_KEY"].encode(), username.encode(), hashlib.sha256).hexdigest()
+        if hmac.compare_digest(sig, expected):
+            return username
+    except Exception:
+        pass
+    return None
 
 def is_authenticated(request: Request) -> bool:
-    cookie = request.cookies.get("session_token")
-    return verify_session(cookie)
+    token = request.cookies.get("session_token")
+    if not token:
+        return False
+    return verify_session(token) is not None
 
 # ================= AUTH ROUTES =================
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
     if is_authenticated(request):
-        return RedirectResponse(url="/", status_code=302)
-    return """
+        return RedirectResponse(url="/")
+    
+    return HTMLResponse("""
     <!DOCTYPE html>
     <html lang="ar" dir="rtl" id="htmlTag">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>تسجيل الدخول — Make-Food.com</title>
+        <title>Make-Food.com — تسجيل دخول الشريك / Partner Login</title>
         <script src="https://cdn.tailwindcss.com"></script>
-        <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800&family=Plus+Jakarta+Sans:wght@500;700&display=swap" rel="stylesheet">
-        <style>body { font-family: 'Tajawal', 'Plus Jakarta Sans', sans-serif; }</style>
+        <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&family=Cairo:wght@400;600;700;800&display=swap" rel="stylesheet">
+        <style>
+            body { font-family: 'Cairo', 'Plus Jakarta Sans', sans-serif; }
+            [dir="ltr"] body { font-family: 'Plus Jakarta Sans', sans-serif; }
+            .font-num { font-family: 'Plus Jakarta Sans', sans-serif; }
+        </style>
     </head>
     <body class="bg-slate-950 text-slate-100 min-h-screen flex items-center justify-center p-4">
         <div class="w-full max-w-md">
-            <div class="bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-2xl relative overflow-hidden">
+            <div class="bg-slate-900/90 backdrop-blur-xl border border-slate-800 rounded-3xl p-8 shadow-2xl relative overflow-hidden">
                 <div class="absolute -top-24 -right-24 w-48 h-48 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none"></div>
                 <div class="absolute -bottom-24 -left-24 w-48 h-48 bg-amber-500/10 rounded-full blur-3xl pointer-events-none"></div>
 
@@ -186,7 +266,7 @@ async def login_page(request: Request):
         </script>
     </body>
     </html>
-    """
+    """)
 
 @app.post("/login")
 async def login(username: str = Form(...), password: str = Form(...)):
@@ -238,119 +318,181 @@ async def get_stats(request: Request, range: str = "last30"):
         ("metrics", "IMPRESSIONS"),
         ("metrics", "CLICKS"),
         ("dimensions", "DATE"),
-        ("filters", f"DOMAIN_NAME=={CONFIG['TARGET_DOMAIN']}")
+        ("reportingTimeZone", "ACCOUNT_TIME_ZONE")
     ]
-    url_daily = f"https://adsense.googleapis.com/v2/{CONFIG['ADSENSE_ACCOUNT']}/reports:generate?{urllib.parse.urlencode(daily_params)}"
+    query_string = urllib.parse.urlencode(daily_params)
+    url_daily = f"https://adsense.googleapis.com/v2/{CONFIG['ADSENSE_ACCOUNT']}/reports:generate?{query_string}"
+    
     req_daily = urllib.request.Request(url_daily, headers={"Authorization": f"Bearer {token}"})
-    
-    daily_data = []
-    totals = {"earnings": 0.0, "views": 0, "rpm": 0.0, "impressions": 0, "clicks": 0, "ctr": 0.0, "currency": "MAD"}
-    
     try:
         with urllib.request.urlopen(req_daily) as resp:
-            res_daily = json.loads(resp.read().decode("utf-8"))
-            for row in res_daily.get("rows", []):
-                cells = [c.get("value", "0") for c in row.get("cells", [])]
-                if len(cells) >= 6:
-                    d_str, earn, views, rpm, imps, clicks = cells[0], float(cells[1]), int(cells[2]), float(cells[3]), int(cells[4]), int(cells[5])
-                    daily_data.append({
-                        "date": d_str,
-                        "earnings": earn,
-                        "pageviews": views,
-                        "rpm": rpm,
-                        "impressions": imps,
-                        "clicks": clicks
-                    })
-            if res_daily.get("totals", {}).get("cells"):
-                t_cells = res_daily["totals"]["cells"]
-                if len(t_cells) >= 6:
-                    totals["earnings"] = float(t_cells[1].get("value", "0"))
-                    totals["views"] = int(t_cells[2].get("value", "0"))
-                    totals["rpm"] = float(t_cells[3].get("value", "0"))
-                    totals["impressions"] = int(t_cells[4].get("value", "0"))
-                    totals["clicks"] = int(t_cells[5].get("value", "0"))
-                    if totals["impressions"] > 0:
-                        totals["ctr"] = round((totals["clicks"] / totals["impressions"]) * 100, 2)
+            data_daily = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
-        print("Error fetching daily report:", e)
+        print("AdSense API Error:", e)
+        data_daily = {}
 
-    # 2. Fetch Countries
+    headers = [h.get("name") for h in data_daily.get("headers", [])]
+    rows = data_daily.get("rows", [])
+    
+    daily_history = []
+    tot_earnings = 0.0
+    tot_views = 0
+    tot_impressions = 0
+    tot_clicks = 0
+
+    def get_val(row, header_name):
+        try:
+            idx = headers.index(header_name)
+            v = row["cells"][idx]["value"]
+            return float(v) if "." in v else int(v)
+        except Exception:
+            return 0
+
+    for r in rows:
+        d_str = r["cells"][headers.index("DATE")]["value"] if "DATE" in headers else ""
+        earn = float(get_val(r, "ESTIMATED_EARNINGS"))
+        views = int(get_val(r, "PAGE_VIEWS"))
+        rpm = float(get_val(r, "PAGE_VIEWS_RPM"))
+        imps = int(get_val(r, "IMPRESSIONS"))
+        clicks = int(get_val(r, "CLICKS"))
+
+        tot_earnings += earn
+        tot_views += views
+        tot_impressions += imps
+        tot_clicks += clicks
+
+        daily_history.append({
+            "date": d_str,
+            "earnings": round(earn, 2),
+            "views": views,
+            "rpm": round(rpm, 2),
+            "impressions": imps,
+            "clicks": clicks
+        })
+
+    avg_rpm = round((tot_earnings / tot_views * 1000), 2) if tot_views > 0 else 0.0
+    ctr = round((tot_clicks / tot_impressions * 100), 2) if tot_impressions > 0 else 0.0
+
+    # Country report
     country_params = [
         ("dateRange", date_range),
-        ("metrics", "ESTIMATED_EARNINGS"),
         ("metrics", "PAGE_VIEWS"),
-        ("metrics", "IMPRESSIONS"),
+        ("metrics", "ESTIMATED_EARNINGS"),
         ("dimensions", "COUNTRY_NAME"),
-        ("filters", f"DOMAIN_NAME=={CONFIG['TARGET_DOMAIN']}")
+        ("reportingTimeZone", "ACCOUNT_TIME_ZONE")
     ]
-    url_country = f"https://adsense.googleapis.com/v2/{CONFIG['ADSENSE_ACCOUNT']}/reports:generate?{urllib.parse.urlencode(country_params)}"
+    query_country = urllib.parse.urlencode(country_params)
+    url_country = f"https://adsense.googleapis.com/v2/{CONFIG['ADSENSE_ACCOUNT']}/reports:generate?{query_country}"
     req_country = urllib.request.Request(url_country, headers={"Authorization": f"Bearer {token}"})
-    countries = []
     try:
         with urllib.request.urlopen(req_country) as resp:
-            res_c = json.loads(resp.read().decode("utf-8"))
-            for row in res_c.get("rows", []):
-                cells = [c.get("value", "0") for c in row.get("cells", [])]
-                if len(cells) >= 4:
-                    c_name, earn, views, imps = cells[0], float(cells[1]), int(cells[2]), int(cells[3])
-                    countries.append({"country": c_name, "earnings": earn, "pageviews": views, "impressions": imps})
-            countries = sorted(countries, key=lambda x: x["earnings"], reverse=True)[:10]
-    except Exception as e:
-        print("Error fetching countries:", e)
+            data_country = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        data_country = {}
 
-    # 3. Fetch Platforms
+    c_headers = [h.get("name") for h in data_country.get("headers", [])]
+    c_rows = data_country.get("rows", [])
+    countries = []
+    for r in c_rows:
+        try:
+            c_name = r["cells"][c_headers.index("COUNTRY_NAME")]["value"]
+            c_views = int(r["cells"][c_headers.index("PAGE_VIEWS")]["value"])
+            c_earn = float(r["cells"][c_headers.index("ESTIMATED_EARNINGS")]["value"])
+            countries.append({"country": c_name, "views": c_views, "earnings": round(c_earn, 2)})
+        except Exception:
+            pass
+    countries.sort(key=lambda x: x["views"], reverse=True)
+
+    # Platforms report
     plat_params = [
         ("dateRange", date_range),
-        ("metrics", "ESTIMATED_EARNINGS"),
         ("metrics", "PAGE_VIEWS"),
         ("dimensions", "PLATFORM_TYPE_NAME"),
-        ("filters", f"DOMAIN_NAME=={CONFIG['TARGET_DOMAIN']}")
+        ("reportingTimeZone", "ACCOUNT_TIME_ZONE")
     ]
-    url_plat = f"https://adsense.googleapis.com/v2/{CONFIG['ADSENSE_ACCOUNT']}/reports:generate?{urllib.parse.urlencode(plat_params)}"
+    query_plat = urllib.parse.urlencode(plat_params)
+    url_plat = f"https://adsense.googleapis.com/v2/{CONFIG['ADSENSE_ACCOUNT']}/reports:generate?{query_plat}"
     req_plat = urllib.request.Request(url_plat, headers={"Authorization": f"Bearer {token}"})
-    platforms = []
     try:
         with urllib.request.urlopen(req_plat) as resp:
-            res_p = json.loads(resp.read().decode("utf-8"))
-            for row in res_p.get("rows", []):
-                cells = [c.get("value", "0") for c in row.get("cells", [])]
-                if len(cells) >= 3:
-                    p_name, earn, views = cells[0], float(cells[1]), int(cells[2])
-                    platforms.append({"platform": p_name, "earnings": earn, "pageviews": views})
-    except Exception as e:
-        print("Error fetching platforms:", e)
+            data_plat = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        data_plat = {}
+
+    p_headers = [h.get("name") for h in data_plat.get("headers", [])]
+    p_rows = data_plat.get("rows", [])
+    platforms = []
+    for r in p_rows:
+        try:
+            p_name = r["cells"][p_headers.index("PLATFORM_TYPE_NAME")]["value"]
+            p_views = int(r["cells"][p_headers.index("PAGE_VIEWS")]["value"])
+            platforms.append({"platform": p_name, "views": p_views})
+        except Exception:
+            pass
 
     return {
-        "domain": CONFIG["TARGET_DOMAIN"],
         "currency": "MAD",
-        "date_range": date_range,
-        "totals": totals,
-        "daily": daily_data,
-        "countries": countries,
+        "domain": CONFIG["TARGET_DOMAIN"],
+        "totals": {
+            "earnings": round(tot_earnings, 2),
+            "views": tot_views,
+            "rpm": avg_rpm,
+            "impressions": tot_impressions,
+            "clicks": tot_clicks,
+            "ctr": ctr,
+            "currency": "MAD"
+        },
+        "daily": daily_history,
+        "countries": countries[:10],
         "platforms": platforms,
         "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
 
-# ================= POSTS & RECIPES API =================
+# ================= POSTS & RECIPES FULL CRUD API =================
 @app.get("/api/recipes")
-async def list_recipes(request: Request, search: str = "", limit: int = 60, offset: int = 0):
+async def list_recipes(request: Request, search: str = "", category: str = "", limit: int = 30, offset: int = 0):
     if not is_authenticated(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
     recipes = get_recipes_data()
+    
+    # Collect distinct categories
+    all_cats = set()
+    for r in recipes:
+        if r.get("categories"):
+            for c in r["categories"]:
+                name = c.get("name") if isinstance(c, dict) else str(c)
+                if name:
+                    all_cats.add(name.strip())
+
+    filtered = recipes
+    if category and category.lower() != "all":
+        c_lower = category.lower()
+        filtered = [
+            r for r in filtered
+            if any(c_lower in (c.get("name", "").lower() if isinstance(c, dict) else str(c).lower()) for c in r.get("categories", []))
+            or c_lower in r.get("recipe", {}).get("category", "").lower()
+        ]
+
     if search:
         s_lower = search.lower()
-        recipes = [r for r in recipes if s_lower in r.get("title", "").lower() or s_lower in r.get("slug", "").lower()]
+        filtered = [
+            r for r in filtered
+            if s_lower in r.get("title", "").lower()
+            or s_lower in r.get("slug", "").lower()
+            or s_lower in r.get("seo", {}).get("focus_keyword", "").lower()
+        ]
     
-    total = len(recipes)
-    paginated = recipes[offset:offset+limit]
+    total = len(filtered)
+    paginated = filtered[offset:offset+limit]
     
     results = []
     for r in paginated:
         cat_name = "General"
         if r.get("categories") and len(r["categories"]) > 0:
-            cat_name = r["categories"][0].get("name", "General")
-        img = r.get("featured_image", {}).get("url", "")
+            c0 = r["categories"][0]
+            cat_name = c0.get("name", "General") if isinstance(c0, dict) else str(c0)
+        img = r.get("featured_image", {}).get("url", "") if isinstance(r.get("featured_image"), dict) else ""
         results.append({
             "id": r.get("wp_post_id") or r.get("slug"),
             "title": r.get("title"),
@@ -364,7 +506,79 @@ async def list_recipes(request: Request, search: str = "", limit: int = 60, offs
             "servings": r.get("recipe", {}).get("yield", "")
         })
     
-    return {"total": total, "recipes": results}
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "has_more": (offset + limit) < total,
+        "categories": sorted(list(all_cats)),
+        "recipes": results
+    }
+
+@app.get("/api/recipes/get/{slug}")
+async def get_recipe_detail(slug: str, request: Request):
+    """Read full recipe details for editing and viewing."""
+    if not is_authenticated(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    recipes = get_recipes_data()
+    found = None
+    for r in recipes:
+        if r.get("slug") == slug or str(r.get("wp_post_id")) == slug:
+            found = r
+            break
+            
+    if not found:
+        raise HTTPException(status_code=404, detail="Recipe not found")
+        
+    ings_list = []
+    for ing in found.get("recipe", {}).get("ingredients", []):
+        if isinstance(ing, dict):
+            raw = ing.get("raw") or f"{ing.get('amount', '')} {ing.get('unit', '')} {ing.get('name', '')}".strip()
+            ings_list.append(raw)
+        elif isinstance(ing, str):
+            ings_list.append(ing)
+            
+    inst_list = []
+    for step in found.get("recipe", {}).get("instructions", []):
+        if isinstance(step, dict):
+            inst_list.append(step.get("text", ""))
+        elif isinstance(step, str):
+            inst_list.append(step)
+            
+    cat_name = "Dinner"
+    if found.get("categories") and len(found["categories"]) > 0:
+        c0 = found["categories"][0]
+        cat_name = c0.get("name", "Dinner") if isinstance(c0, dict) else str(c0)
+        
+    author_name = found.get("author", {}).get("name", "Maria") if isinstance(found.get("author"), dict) else "Maria"
+    img_url = found.get("featured_image", {}).get("url", "") if isinstance(found.get("featured_image"), dict) else ""
+    rec = found.get("recipe", {})
+    
+    prep_m = rec.get("prep_time_minutes") or 15
+    cook_m = rec.get("cook_time_minutes") or 25
+    y_str = str(rec.get("yield", "4")).replace(" servings", "").replace(" serving", "").strip()
+
+    return {
+        "success": True,
+        "recipe": {
+            "id": found.get("wp_post_id") or found.get("slug"),
+            "original_slug": found.get("slug"),
+            "slug": found.get("slug"),
+            "title": found.get("title", ""),
+            "category": cat_name,
+            "author": author_name,
+            "description": rec.get("description") or found.get("seo", {}).get("meta_description", ""),
+            "featured_image": img_url,
+            "prep_time": prep_m,
+            "cook_time": cook_m,
+            "servings": y_str or "4",
+            "ingredients_raw": "\n".join(ings_list),
+            "instructions_raw": "\n".join(inst_list),
+            "article_html": found.get("article_html", ""),
+            "live_url": f"https://make-food.com/{found.get('slug')}/"
+        }
+    }
 
 @app.post("/api/recipes/create")
 async def create_recipe(
@@ -393,7 +607,7 @@ async def create_recipe(
     for line in ingredients_raw.strip().split("\n"):
         line = line.strip()
         if line:
-            ingredients.append({"name": line, "amount": "", "unit": ""})
+            ingredients.append({"name": line, "amount": "", "unit": "", "raw": line})
             
     instructions = []
     for idx, line in enumerate(instructions_raw.strip().split("\n")):
@@ -419,7 +633,7 @@ async def create_recipe(
             "width": 1200,
             "height": 800
         },
-        "categories": [{"id": "1", "name": category.strip(), "slug": category.strip().lower()}],
+        "categories": [{"id": "1", "name": category.strip(), "slug": category.strip().lower().replace(" ", "-")}],
         "tags": [],
         "seo": {
             "meta_title": title.strip(),
@@ -455,60 +669,11 @@ async def create_recipe(
         }
     }
 
-    # Update in-memory
     all_recipes = get_recipes_data()
     all_recipes.insert(0, new_recipe)
-    recipes_cache["data"] = all_recipes
     
-    # Push to GitHub
     try:
-        gh_h = {"Authorization": f"token {CONFIG['GITHUB_TOKEN']}", "Accept": "application/vnd.github.v3+json", "Content-Type": "application/json"}
-        req_c = urllib.request.Request(f"https://api.github.com/repos/{CONFIG['REPO_NAME']}/commits/main", headers=gh_h)
-        with urllib.request.urlopen(req_c) as r_c:
-            commit_info = json.loads(r_c.read().decode("utf-8"))
-            latest_commit_sha = commit_info["sha"]
-
-        full_json_str = json.dumps(all_recipes, ensure_ascii=False)
-        blob_payload = {"content": full_json_str, "encoding": "utf-8"}
-        req_b = urllib.request.Request(f"https://api.github.com/repos/{CONFIG['REPO_NAME']}/git/blobs", data=json.dumps(blob_payload).encode("utf-8"), headers=gh_h, method="POST")
-        with urllib.request.urlopen(req_b) as r_b:
-            blob_sha = json.loads(r_b.read().decode("utf-8"))["sha"]
-
-        tree_payload = {
-            "base_tree": latest_commit_sha,
-            "tree": [{
-                "path": "src/data/recipes.json",
-                "mode": "100644",
-                "type": "blob",
-                "sha": blob_sha
-            }]
-        }
-        req_t = urllib.request.Request(f"https://api.github.com/repos/{CONFIG['REPO_NAME']}/git/trees", data=json.dumps(tree_payload).encode("utf-8"), headers=gh_h, method="POST")
-        with urllib.request.urlopen(req_t) as r_t:
-            tree_sha = json.loads(r_t.read().decode("utf-8"))["sha"]
-
-        commit_payload = {
-            "message": f"feat(recipes): publish recipe '{title.strip()}' via partner portal",
-            "tree": tree_sha,
-            "parents": [latest_commit_sha]
-        }
-        req_cm = urllib.request.Request(f"https://api.github.com/repos/{CONFIG['REPO_NAME']}/git/commits", data=json.dumps(commit_payload).encode("utf-8"), headers=gh_h, method="POST")
-        with urllib.request.urlopen(req_cm) as r_cm:
-            new_commit_sha = json.loads(r_cm.read().decode("utf-8"))["sha"]
-
-        ref_payload = {"sha": new_commit_sha, "force": False}
-        req_ref = urllib.request.Request(f"https://api.github.com/repos/{CONFIG['REPO_NAME']}/git/refs/heads/main", data=json.dumps(ref_payload).encode("utf-8"), headers=gh_h, method="PATCH")
-        with urllib.request.urlopen(req_ref):
-            pass
-
-        # Trigger Coolify deployment
-        coolify_h = {"Authorization": f"Bearer {CONFIG['COOLIFY_TOKEN']}", "Content-Type": "application/json"}
-        req_dep = urllib.request.Request(f"{CONFIG['COOLIFY_URL']}/api/v1/deploy?uuid={CONFIG['MAKEFOOD_COOLIFY_UUID']}", headers=coolify_h, method="POST")
-        try:
-            urllib.request.urlopen(req_dep)
-        except Exception:
-            pass
-
+        push_recipes_to_github_and_redeploy(all_recipes, f"feat(recipes): publish recipe '{title.strip()}' via partner portal")
         return {
             "success": True,
             "slug": slug_clean,
@@ -517,10 +682,143 @@ async def create_recipe(
         }
     except Exception as e:
         print("Error saving recipe to GitHub:", e)
+        return {"success": False, "error": str(e)}
+
+@app.post("/api/recipes/update")
+async def update_recipe(
+    request: Request,
+    original_slug: str = Form(...),
+    title: str = Form(...),
+    slug: str = Form(...),
+    category: str = Form("Dinner"),
+    author: str = Form("Maria"),
+    description: str = Form(""),
+    featured_image: str = Form(""),
+    prep_time: int = Form(15),
+    cook_time: int = Form(25),
+    servings: int = Form(4),
+    ingredients_raw: str = Form(""),
+    instructions_raw: str = Form(""),
+    article_html: str = Form("")
+):
+    """Update an existing recipe and redeploy to make-food.com."""
+    if not is_authenticated(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+        
+    slug_clean = slug.strip().lower().replace(" ", "-").replace("/", "")
+    if not slug_clean:
+        slug_clean = original_slug
+        
+    all_recipes = get_recipes_data()
+    target_idx = None
+    for i, r in enumerate(all_recipes):
+        if r.get("slug") == original_slug or str(r.get("wp_post_id")) == original_slug:
+            target_idx = i
+            break
+            
+    if target_idx is None:
+        raise HTTPException(status_code=404, detail="Original recipe not found")
+        
+    r = all_recipes[target_idx]
+    
+    ingredients = []
+    for line in ingredients_raw.strip().split("\n"):
+        line = line.strip()
+        if line:
+            ingredients.append({"name": line, "amount": "", "unit": "", "raw": line})
+            
+    instructions = []
+    for idx, line in enumerate(instructions_raw.strip().split("\n")):
+        line = line.strip()
+        if line:
+            instructions.append({"step_number": idx + 1, "text": line})
+            
+    # Update properties
+    r["title"] = title.strip()
+    r["recipe_card_title"] = title.strip()
+    r["slug"] = slug_clean
+    r["url_path"] = f"/{slug_clean}/"
+    r["canonical_url"] = f"https://make-food.com/{slug_clean}/"
+    
+    if not isinstance(r.get("author"), dict):
+        r["author"] = {"id": "1", "name": author.strip() or "Maria"}
+    else:
+        r["author"]["name"] = author.strip() or "Maria"
+        
+    if not isinstance(r.get("featured_image"), dict):
+        r["featured_image"] = {"id": "1", "url": featured_image.strip(), "alt": title.strip()}
+    else:
+        if featured_image.strip():
+            r["featured_image"]["url"] = featured_image.strip()
+        r["featured_image"]["alt"] = title.strip()
+        
+    r["categories"] = [{"id": "1", "name": category.strip(), "slug": category.strip().lower().replace(" ", "-")}]
+    
+    if not isinstance(r.get("seo"), dict):
+        r["seo"] = {}
+    r["seo"]["meta_title"] = title.strip()
+    r["seo"]["meta_description"] = description.strip()[:155] if description else title.strip()
+    r["seo"]["focus_keyword"] = title.strip()
+    
+    r["article_html"] = article_html.strip() or f"<p>{description.strip()}</p>"
+    
+    if not isinstance(r.get("recipe"), dict):
+        r["recipe"] = {}
+    rec = r["recipe"]
+    rec["description"] = description.strip() or title.strip()
+    rec["prep_time"] = f"{prep_time} min"
+    rec["prep_time_minutes"] = prep_time
+    rec["cook_time"] = f"{cook_time} min"
+    rec["cook_time_minutes"] = cook_time
+    rec["total_time"] = f"{prep_time + cook_time} min"
+    rec["total_time_minutes"] = prep_time + cook_time
+    rec["yield"] = f"{servings} servings"
+    rec["category"] = category.strip()
+    rec["ingredients"] = ingredients
+    rec["instructions"] = instructions
+    
+    try:
+        push_recipes_to_github_and_redeploy(all_recipes, f"feat(recipes): update recipe '{title.strip()}' via partner portal")
         return {
-            "success": False,
-            "error": str(e)
+            "success": True,
+            "slug": slug_clean,
+            "live_url": f"https://make-food.com/{slug_clean}/",
+            "message": f"تم تحديث المقال '{title}' بنجاح! / Recipe updated successfully!"
         }
+    except Exception as e:
+        print("Error updating recipe in GitHub:", e)
+        return {"success": False, "error": str(e)}
+
+@app.post("/api/recipes/delete")
+async def delete_recipe(request: Request, slug: str = Form(...)):
+    """Delete an existing recipe and redeploy make-food.com."""
+    if not is_authenticated(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+        
+    all_recipes = get_recipes_data()
+    target_idx = None
+    target_title = slug
+    for i, r in enumerate(all_recipes):
+        if r.get("slug") == slug or str(r.get("wp_post_id")) == slug:
+            target_idx = i
+            target_title = r.get("title", slug)
+            break
+            
+    if target_idx is None:
+        raise HTTPException(status_code=404, detail="Recipe not found")
+        
+    all_recipes.pop(target_idx)
+    
+    try:
+        push_recipes_to_github_and_redeploy(all_recipes, f"feat(recipes): delete recipe '{target_title}' via partner portal")
+        return {
+            "success": True,
+            "deleted_slug": slug,
+            "message": f"تم حذف المقال '{target_title}' بنجاح! / Recipe deleted successfully!"
+        }
+    except Exception as e:
+        print("Error deleting recipe from GitHub:", e)
+        return {"success": False, "error": str(e)}
 
 # ================= AI GENERATION & REWRITER API =================
 @app.post("/api/ai/models")
@@ -528,38 +826,41 @@ async def fetch_ai_models(request: Request):
     if not is_authenticated(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+        
     provider = body.get("provider", "google")
     api_key = body.get("api_key", "").strip()
     
     if not api_key:
-        raise HTTPException(status_code=400, detail="API Key is required")
-
-    models = []
+        return {"success": False, "error": "API Key is required"}
+        
     try:
         if provider == "google":
-            # Gemini models
             url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-            req = urllib.request.Request(url)
-            with urllib.request.urlopen(req, timeout=12) as resp:
+            req = urllib.request.Request(url, headers={"User-Agent": "MakeFoodPortal/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-                for m in data.get("models", []):
-                    name = m.get("name", "")
-                    if "gemini" in name and "generateContent" in m.get("supportedGenerationMethods", []):
-                        m_id = name.replace("models/", "")
-                        disp = m.get("displayName", m_id)
-                        models.append({"id": m_id, "name": f"{disp} ({m_id})"})
-        elif provider == "openrouter":
-            # OpenRouter models
+                models = [
+                    {"id": m["name"].replace("models/", ""), "name": m.get("displayName", m["name"])}
+                    for m in data.get("models", [])
+                    if "generateContent" in m.get("supportedGenerationMethods", [])
+                ]
+                models.sort(key=lambda x: ("gemini-1.5" in x["id"] or "gemini-2.0" in x["id"]), reverse=True)
+                return {"success": True, "provider": "google", "models": models}
+        else:
             url = "https://openrouter.ai/api/v1/models"
-            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
-            with urllib.request.urlopen(req, timeout=12) as resp:
+            req = urllib.request.Request(url, headers={
+                "Authorization": f"Bearer {api_key}",
+                "HTTP-Referer": "https://partner.make-food.com",
+                "X-Title": "MakeFood Partner Portal"
+            })
+            with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-                for m in data.get("data", []):
-                    models.append({"id": m.get("id"), "name": m.get("name", m.get("id"))})
-                # Sort popular ones first
-                models = sorted(models, key=lambda x: x["name"])
-        return {"success": True, "provider": provider, "models": models}
+                models = [{"id": m["id"], "name": m.get("name", m["id"])} for m in data.get("data", [])]
+                return {"success": True, "provider": "openrouter", "models": models[:60]}
     except Exception as e:
         return {"success": False, "error": f"Failed to fetch models: {str(e)}"}
 
@@ -568,270 +869,291 @@ async def generate_recipe_ai(request: Request):
     if not is_authenticated(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+        
     provider = body.get("provider", "google")
     api_key = body.get("api_key", "").strip()
-    model = body.get("model", "").strip()
-    mode = body.get("mode", "name") # "name" or "rewrite"
-    recipe_input = body.get("recipe_input", "").strip()
-    category = body.get("category", "Dinner").strip()
+    model = body.get("model", "gemini-1.5-flash")
+    mode = body.get("mode", "name")
+    input_text = body.get("input_text", "").strip()
+    
+    if not api_key:
+        return {"success": False, "error": "API Key is required. Please set it in AI Settings."}
+    if not input_text:
+        return {"success": False, "error": "Recipe title or source inspiration content is required."}
 
-    if not api_key or not recipe_input:
-        raise HTTPException(status_code=400, detail="API Key and input text are required")
+    system_instruction = (
+        "You are a professional culinary chef, recipe creator, and food SEO expert for 'make-food.com'. "
+        "Your goal is to output an authentic, highly detailed, mouthwatering, and 100% original recipe in valid JSON format. "
+        "Strictly adhere to this JSON structure with NO markdown fences or preamble:\n"
+        "{\n"
+        '  "title": "Engaging Recipe Title",\n'
+        '  "slug": "kebab-case-recipe-slug",\n'
+        '  "category": "Dinner",\n'
+        '  "description": "2-3 sentences SEO meta description",\n'
+        '  "prep_time": 15,\n'
+        '  "cook_time": 25,\n'
+        '  "servings": 4,\n'
+        '  "ingredients": ["1 tbsp olive oil", "2 cloves minced garlic", ...],\n'
+        '  "instructions": ["Step 1 text...", "Step 2 text...", ...],\n'
+        '  "article_html": "<p>Introduction...</p><h2>Why You Will Love This</h2><p>...</p><h2>Chef Tips</h2><ul><li>...</li></ul>"\n'
+        "}"
+    )
 
-    system_instruction = """
-    You are an expert chef, food blogger, and SEO copywriter for Make-Food.com. 
-    You must create or rewrite a complete, original, appetizing, and SEO-optimized English recipe.
-    You MUST return ONLY a raw JSON object (without markdown code blocks, without commentary) matching this schema:
-    {
-      "title": "Clear, appetizing recipe title",
-      "slug": "recipe-title-lowercase-hyphens",
-      "category": "Dinner",
-      "prep_time": 15,
-      "cook_time": 25,
-      "servings": 4,
-      "description": "2 appetizing sentences summarizing the dish.",
-      "featured_image": "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&w=1200&q=80",
-      "ingredients": ["1 lb chicken breast, diced", "2 cloves garlic, minced", "1 tbsp olive oil"],
-      "instructions": ["Heat olive oil in a skillet over medium heat.", "Add garlic and cook for 1 minute.", "Serve hot."],
-      "article_html": "<p>Introductory story explaining why this recipe is delicious...</p><h3>Why You'll Love This Recipe</h3><ul><li>Quick and easy...</li></ul><h3>Chef's Secret Tips</h3><p>Tips for perfect results...</p><h3>Storage & Reheating</h3><p>Store in airtight container...</p>"
-    }
-    """
-
-    user_prompt = ""
     if mode == "name":
-        user_prompt = f"Create a full original recipe for the dish: '{recipe_input}'. Recommended category: {category}."
+        user_prompt = f"Create a comprehensive original recipe and engaging food article based on this recipe name: '{input_text}'."
     else:
-        user_prompt = f"Inspiration article/recipe to completely rewrite into a 100% unique original recipe for Make-Food.com:\n\n{recipe_input}"
+        user_prompt = f"Rewrite and transform the following recipe / food inspiration text into a completely fresh, 100% original, high-quality recipe with rich article HTML:\n\n{input_text}"
 
-    ai_response_text = ""
     try:
+        raw_output = ""
         if provider == "google":
-            target_model = model if model else "gemini-2.5-flash"
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={api_key}"
+            model_clean = model.replace("models/", "")
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_clean}:generateContent?key={api_key}"
             payload = {
-                "contents": [{"parts": [{"text": f"{system_instruction}\n\nTask:\n{user_prompt}"}]}],
-                "generationConfig": {"responseMimeType": "application/json"}
+                "system_instruction": {"parts": [{"text": system_instruction}]},
+                "contents": [{"parts": [{"text": user_prompt}]}],
+                "generationConfig": {"temperature": 0.7, "response_mime_type": "application/json"}
             }
-            req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
+            req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=35) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                ai_response_text = data["candidates"][0]["content"]["parts"][0]["text"]
-        elif provider == "openrouter":
-            target_model = model if model else "openai/gpt-4o-mini"
+                res_data = json.loads(resp.read().decode("utf-8"))
+                raw_output = res_data["candidates"][0]["content"]["parts"][0]["text"]
+        else:
             url = "https://openrouter.ai/api/v1/chat/completions"
             payload = {
-                "model": target_model,
+                "model": model,
                 "messages": [
                     {"role": "system", "content": system_instruction},
                     {"role": "user", "content": user_prompt}
                 ],
-                "response_format": {"type": "json_object"}
+                "temperature": 0.7
             }
-            req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, method="POST")
+            req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://partner.make-food.com"
+            })
             with urllib.request.urlopen(req, timeout=35) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                ai_response_text = data["choices"][0]["message"]["content"]
+                res_data = json.loads(resp.read().decode("utf-8"))
+                raw_output = res_data["choices"][0]["message"]["content"]
 
-        # Parse cleaned JSON
-        clean_json_str = ai_response_text.strip()
+        clean_json_str = raw_output.strip()
         if clean_json_str.startswith("```json"):
             clean_json_str = clean_json_str[7:]
+        if clean_json_str.startswith("```"):
+            clean_json_str = clean_json_str[3:]
         if clean_json_str.endswith("```"):
             clean_json_str = clean_json_str[:-3]
         clean_json_str = clean_json_str.strip()
 
-        parsed = json.loads(clean_json_str)
-        return {"success": True, "recipe": parsed}
+        recipe_json = json.loads(clean_json_str)
+        return {"success": True, "recipe": recipe_json}
     except Exception as e:
-        print("AI generation error:", e)
-        return {"success": False, "error": f"AI generation error: {str(e)}"}
+        return {"success": False, "error": f"AI Generation failed: {str(e)}"}
 
-# ================= DASHBOARD UI =================
+# ================= DASHBOARD HTML =================
 @app.get("/", response_class=HTMLResponse)
 async def dashboard_page(request: Request):
     if not is_authenticated(request):
-        return RedirectResponse(url="/login", status_code=302)
-    
-    return """
+        return RedirectResponse(url="/login")
+
+    return HTMLResponse("""
     <!DOCTYPE html>
     <html lang="ar" dir="rtl" id="htmlRoot">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Make-Food.com — Portal الإدارة، المقالات والأرباح</title>
+        <title>Make-Food.com — لوحة إدارة الشريك / Partner Portal</title>
         <script src="https://cdn.tailwindcss.com"></script>
         <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-        <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800&family=Plus+Jakarta+Sans:wght@500;700;800&display=swap" rel="stylesheet">
+        <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Cairo:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
         <style>
-            body { font-family: 'Tajawal', 'Plus Jakarta Sans', sans-serif; }
+            body { font-family: 'Cairo', 'Plus Jakarta Sans', sans-serif; }
+            [dir="ltr"] body { font-family: 'Plus Jakarta Sans', sans-serif; }
             .font-num { font-family: 'Plus Jakarta Sans', sans-serif; }
-            .glass { background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(16px); }
+            .font-code { font-family: 'JetBrains Mono', monospace; }
+            .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+            .custom-scrollbar::-webkit-scrollbar-track { background: #0f172a; }
+            .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+            .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #10b981; }
         </style>
     </head>
-    <body class="bg-slate-950 text-slate-100 min-h-screen">
+    <body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col selection:bg-emerald-500 selection:text-slate-950">
+
         <!-- Top Navigation -->
-        <header class="border-b border-slate-800/80 glass sticky top-0 z-50">
+        <header class="sticky top-0 z-40 bg-slate-900/90 backdrop-blur-md border-b border-slate-800">
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-                <!-- Brand & Status -->
+                
+                <!-- Logo & Brand -->
                 <div class="flex items-center gap-3">
-                    <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-amber-500 to-emerald-500 flex items-center justify-center shadow-lg shadow-emerald-500/20 text-2xl flex-shrink-0">
-                        🍲
+                    <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-amber-500 to-emerald-500 p-0.5 flex-shrink-0 shadow-md shadow-emerald-500/20">
+                        <div class="w-full h-full bg-slate-950 rounded-[10px] flex items-center justify-center text-xl">
+                            🍲
+                        </div>
                     </div>
                     <div>
                         <div class="flex items-center gap-2">
-                            <h1 class="text-lg font-extrabold tracking-tight text-white font-num">Make-Food.com</h1>
-                            <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1 font-num">
-                                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                                LIVE
-                            </span>
-                            <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20 font-num">
-                                MAD (د.م.) 🇲🇦
+                            <h1 class="text-base font-bold text-white tracking-tight font-['Plus_Jakarta_Sans']">Make-Food.com</h1>
+                            <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-num">
+                                MAD 🇲🇦
                             </span>
                         </div>
-                        <p id="topSubtitle" class="text-xs text-slate-400">لوحة التحكم، النشر والمداخيل الحصرية</p>
+                        <p id="topSubtitle" class="text-[11px] text-slate-400 hidden sm:block">لوحة الشريك الخاصة بالإحصائيات والمقالات</p>
                     </div>
                 </div>
 
-                <!-- Tabs & Controls -->
-                <div class="flex items-center gap-3">
-                    <div class="bg-slate-900 border border-slate-800 rounded-xl p-1 flex items-center gap-1 text-xs">
-                        <button onclick="switchTab('analytics')" id="tab-btn-analytics" class="px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 font-bold border border-emerald-500/20 transition flex items-center gap-1.5">
-                            <span>📊</span> <span id="tabNameAnalytics">الإحصائيات والأرباح</span>
-                        </button>
-                        <button onclick="switchTab('recipes')" id="tab-btn-recipes" class="px-3 py-1.5 rounded-lg text-slate-400 hover:text-white transition flex items-center gap-1.5">
-                            <span>📝</span> <span id="tabNameRecipes">المقالات والوصفات</span>
-                        </button>
-                        <button onclick="switchTab('create')" id="tab-btn-create" class="px-3 py-1.5 rounded-lg text-slate-400 hover:text-white transition flex items-center gap-1.5">
-                            <span>➕</span> <span id="tabNameCreate">نشر مقال جديد</span>
-                        </button>
-                        <button onclick="switchTab('settings')" id="tab-btn-settings" class="px-3 py-1.5 rounded-lg text-slate-400 hover:text-white transition flex items-center gap-1.5">
-                            <span>⚙️</span> <span id="tabNameSettings">الإعدادات و الذكاء الاصطناعي</span>
-                        </button>
-                    </div>
-
-                    <!-- Language Switcher Button -->
-                    <button onclick="toggleLanguage()" id="langToggleBtn" class="px-3 py-1.5 text-xs font-bold bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 rounded-xl transition flex items-center gap-1.5">
-                        <span>🌐</span> <span id="langBtnText">English</span>
+                <!-- Navigation Tabs -->
+                <nav class="flex items-center gap-1 sm:gap-2">
+                    <button onclick="switchTab('analytics')" id="nav-analytics" class="px-3 py-2 rounded-xl text-xs sm:text-sm font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 transition flex items-center gap-1.5">
+                        <span>📊</span> <span id="tabNameAnalytics">الإحصائيات والأرباح</span>
                     </button>
+                    <button onclick="switchTab('recipes')" id="nav-recipes" class="px-3 py-2 rounded-xl text-xs sm:text-sm font-semibold text-slate-400 hover:text-white hover:bg-slate-800/60 transition flex items-center gap-1.5">
+                        <span>📝</span> <span id="tabNameRecipes">المقالات والوصفات</span>
+                    </button>
+                    <button onclick="switchTab('create')" id="nav-create" class="px-3 py-2 rounded-xl text-xs sm:text-sm font-semibold text-slate-400 hover:text-white hover:bg-slate-800/60 transition flex items-center gap-1.5">
+                        <span>➕</span> <span id="tabNameCreate">إنشاء مقال جديد</span>
+                    </button>
+                    <button onclick="switchTab('settings')" id="nav-settings" class="px-3 py-2 rounded-xl text-xs sm:text-sm font-semibold text-slate-400 hover:text-white hover:bg-slate-800/60 transition flex items-center gap-1.5">
+                        <span>⚙️</span> <span id="tabNameSettings">الإعدادات و AI</span>
+                    </button>
+                </nav>
 
-                    <a href="/logout" title="تسجيل الخروج" class="px-3 py-1.5 text-xs font-bold text-slate-400 hover:text-rose-400 border border-slate-800 rounded-xl hover:border-rose-500/30 transition flex items-center gap-1">
-                        <span id="logoutBtnText">خروج</span>
+                <!-- Actions: Language Switch & Logout -->
+                <div class="flex items-center gap-2">
+                    <button onclick="toggleLanguage()" id="btnToggleLang"
+                        class="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold text-slate-200 transition flex items-center gap-1.5">
+                        <span>🌐</span>
+                        <span id="langBtnText">English</span>
+                    </button>
+                    <a href="/logout" class="p-2 rounded-xl text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 border border-transparent hover:border-rose-500/20 transition text-xs font-semibold flex items-center gap-1">
+                        <span>🚪</span> <span id="logoutBtnText" class="hidden md:inline">خروج</span>
                     </a>
                 </div>
+
             </div>
         </header>
 
-        <!-- Main Wrapper -->
-        <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <!-- Main Workspace -->
+        <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
 
             <!-- ================= TAB 1: REVENUE & ANALYTICS ================= -->
             <div id="tab-analytics" class="space-y-8">
-                <!-- Filter Range Header -->
-                <div class="flex flex-col sm:flex-row items-center justify-between gap-4 bg-slate-900/60 border border-slate-800/80 p-4 rounded-2xl">
+                
+                <!-- Range Controls & Headline -->
+                <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-900/60 border border-slate-800/80 p-4 rounded-2xl">
                     <div>
-                        <h2 id="kpiSectionTitle" class="text-base font-bold text-white">مؤشرات الأداء والأرباح لـ make-food.com</h2>
-                        <p id="kpiSectionSub" class="text-xs text-slate-400">مباشرة من Google AdSense Management API بعملة الدرهم المغربي (MAD)</p>
+                        <h2 id="kpiSectionTitle" class="text-base font-bold text-white flex items-center gap-2">
+                            <span>📈</span> مداخيل وزيارات الموقع الحي make-food.com
+                        </h2>
+                        <p id="kpiSectionSub" class="text-xs text-slate-400 mt-1">مربوطة بـ Google AdSense Management API ومحسوبة بالدرهم المغربي (MAD)</p>
                     </div>
-                    <div class="bg-slate-900 border border-slate-800 rounded-xl p-1 flex items-center gap-1 text-xs font-num">
-                        <button onclick="setRange('today')" id="btn-today" class="px-3 py-1.5 rounded-lg text-slate-400 hover:text-white transition">Today</button>
-                        <button onclick="setRange('yesterday')" id="btn-yesterday" class="px-3 py-1.5 rounded-lg text-slate-400 hover:text-white transition">Yesterday</button>
-                        <button onclick="setRange('last7')" id="btn-last7" class="px-3 py-1.5 rounded-lg text-slate-400 hover:text-white transition">7 Days</button>
-                        <button onclick="setRange('last30')" id="btn-last30" class="px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 font-bold border border-emerald-500/20 transition">30 Days</button>
-                        <button onclick="setRange('month')" id="btn-month" class="px-3 py-1.5 rounded-lg text-slate-400 hover:text-white transition">This Month</button>
+                    
+                    <!-- Date Range Switcher -->
+                    <div class="flex items-center gap-1 bg-slate-800/80 p-1 rounded-xl border border-slate-700/60 text-xs font-num">
+                        <button onclick="changeRange('today')" id="btn-today" class="px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-white transition">Today</button>
+                        <button onclick="changeRange('yesterday')" id="btn-yesterday" class="px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-white transition">Yesterday</button>
+                        <button onclick="changeRange('last7')" id="btn-last7" class="px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-white transition">7 Days</button>
+                        <button onclick="changeRange('last30')" id="btn-last30" class="px-2.5 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30 transition">30 Days</button>
+                        <button onclick="changeRange('month')" id="btn-month" class="px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-white transition">This Month</button>
                     </div>
                 </div>
 
-                <!-- KPI Metric Cards -->
-                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+                <!-- KPI Overview Grid (Currency in MAD) -->
+                <div class="grid grid-cols-2 lg:grid-cols-5 gap-4">
+                    
                     <!-- Revenue in MAD -->
-                    <div class="bg-slate-900 border border-slate-800/80 rounded-2xl p-5 relative overflow-hidden">
-                        <div class="absolute top-0 right-0 w-24 h-24 bg-emerald-500/10 rounded-full blur-2xl"></div>
-                        <div class="flex items-center justify-between text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">
-                            <span id="kpiTitleEarnings">إجمالي الأرباح</span>
-                            <span class="text-emerald-400 font-bold font-num">MAD</span>
+                    <div class="col-span-2 sm:col-span-1 bg-gradient-to-br from-emerald-950/40 via-slate-900 to-slate-900 border border-emerald-500/30 rounded-2xl p-5 shadow-lg relative overflow-hidden">
+                        <div class="flex items-center justify-between mb-2">
+                            <span id="kpiTitleEarnings" class="text-xs font-bold text-emerald-400">الأرباح المقدرة</span>
+                            <span class="text-xs bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded font-num">MAD</span>
                         </div>
-                        <div id="stat-earnings" class="text-3xl font-extrabold text-white tracking-tight font-num">0.00 د.م.</div>
-                        <div class="text-[11px] text-slate-400 mt-2 flex items-center gap-1">
-                            <span id="kpiSubEarnings" class="text-emerald-400 font-bold">100% مؤكد</span> من AdSense الرسمي
+                        <div class="text-2xl sm:text-3xl font-extrabold text-white font-num flex items-baseline gap-1.5">
+                            <span id="kpi-earnings">0.00</span>
+                            <span class="text-sm font-semibold text-emerald-400">د.م.</span>
                         </div>
+                        <p id="kpiSubEarnings" class="text-[11px] text-slate-400 mt-2">100% مباشرة من AdSense للموقع</p>
                     </div>
 
                     <!-- Pageviews -->
-                    <div class="bg-slate-900 border border-slate-800/80 rounded-2xl p-5 relative overflow-hidden">
-                        <div class="absolute top-0 right-0 w-24 h-24 bg-sky-500/10 rounded-full blur-2xl"></div>
-                        <div class="flex items-center justify-between text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">
-                            <span id="kpiTitleViews">مشاهدات الصفحات</span>
-                            <span class="text-sky-400 text-base">👁️</span>
+                    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg">
+                        <div class="flex items-center justify-between mb-2">
+                            <span id="kpiTitleViews" class="text-xs font-bold text-slate-400">مشاهدات الصفحة</span>
+                            <span class="text-slate-500 text-xs">👁️</span>
                         </div>
-                        <div id="stat-views" class="text-3xl font-extrabold text-white tracking-tight font-num">0</div>
-                        <div id="kpiSubViews" class="text-[11px] text-slate-400 mt-2">
-                            عدد قراءات المقالات
-                        </div>
+                        <div id="kpi-views" class="text-2xl sm:text-3xl font-extrabold text-white font-num">0</div>
+                        <p id="kpiSubViews" class="text-[11px] text-slate-500 mt-2">عدد الزيارات الإجمالية</p>
                     </div>
 
-                    <!-- RPM in MAD -->
-                    <div class="bg-slate-900 border border-slate-800/80 rounded-2xl p-5 relative overflow-hidden">
-                        <div class="absolute top-0 right-0 w-24 h-24 bg-amber-500/10 rounded-full blur-2xl"></div>
-                        <div class="flex items-center justify-between text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">
-                            <span id="kpiTitleRpm">معدل الربح (RPM)</span>
-                            <span class="text-amber-400 text-base">📈</span>
+                    <!-- Page RPM in MAD -->
+                    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg">
+                        <div class="flex items-center justify-between mb-2">
+                            <span id="kpiTitleRpm" class="text-xs font-bold text-slate-400">معدل الألف (RPM)</span>
+                            <span class="text-xs text-amber-400 font-num">MAD</span>
                         </div>
-                        <div id="stat-rpm" class="text-3xl font-extrabold text-white tracking-tight font-num">0.00 د.م.</div>
-                        <div id="kpiSubRpm" class="text-[11px] text-slate-400 mt-2">
-                            الربح لكل 1,000 مشاهدة
+                        <div class="text-2xl sm:text-3xl font-extrabold text-amber-400 font-num flex items-baseline gap-1">
+                            <span id="kpi-rpm">0.00</span>
+                            <span class="text-xs font-normal text-slate-400">د.م.</span>
                         </div>
+                        <p id="kpiSubRpm" class="text-[11px] text-slate-500 mt-2">الربح لكل 1,000 مشاهدة</p>
                     </div>
 
                     <!-- Impressions -->
-                    <div class="bg-slate-900 border border-slate-800/80 rounded-2xl p-5 relative overflow-hidden">
-                        <div class="absolute top-0 right-0 w-24 h-24 bg-purple-500/10 rounded-full blur-2xl"></div>
-                        <div class="flex items-center justify-between text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">
-                            <span id="kpiTitleImps">ظهور الإعلانات</span>
-                            <span class="text-purple-400 text-base">📊</span>
+                    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg">
+                        <div class="flex items-center justify-between mb-2">
+                            <span id="kpiTitleImps" class="text-xs font-bold text-slate-400">مرات الظهور</span>
+                            <span class="text-slate-500 text-xs">📊</span>
                         </div>
-                        <div id="stat-impressions" class="text-3xl font-extrabold text-white tracking-tight font-num">0</div>
-                        <div id="kpiSubImps" class="text-[11px] text-slate-400 mt-2">
-                            مرات ظهور الإعلانات
-                        </div>
+                        <div id="kpi-impressions" class="text-2xl sm:text-3xl font-extrabold text-white font-num">0</div>
+                        <p id="kpiSubImps" class="text-[11px] text-slate-500 mt-2">مرات عرض الإعلانات</p>
                     </div>
 
                     <!-- Clicks & CTR -->
-                    <div class="bg-slate-900 border border-slate-800/80 rounded-2xl p-5 relative overflow-hidden">
-                        <div class="absolute top-0 right-0 w-24 h-24 bg-teal-500/10 rounded-full blur-2xl"></div>
-                        <div class="flex items-center justify-between text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">
-                            <span id="kpiTitleClicks">النقرات (CTR)</span>
-                            <span class="text-teal-400 text-base">🖱️</span>
+                    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg">
+                        <div class="flex items-center justify-between mb-2">
+                            <span id="kpiTitleClicks" class="text-xs font-bold text-slate-400">النقرات (CTR)</span>
+                            <span class="text-slate-500 text-xs">🎯</span>
                         </div>
-                        <div id="stat-clicks" class="text-3xl font-extrabold text-white tracking-tight font-num">0 <span class="text-sm font-medium text-slate-400" id="stat-ctr">(0%)</span></div>
-                        <div id="kpiSubClicks" class="text-[11px] text-slate-400 mt-2">
-                            تفاعل الزوار مع الإعلانات
+                        <div class="text-2xl sm:text-3xl font-extrabold text-white font-num flex items-baseline gap-1.5">
+                            <span id="kpi-clicks">0</span>
+                            <span id="kpi-ctr" class="text-xs font-semibold text-emerald-400 font-num">(0.0%)</span>
                         </div>
+                        <p id="kpiSubClicks" class="text-[11px] text-slate-500 mt-2">نسبة النقر إلى الظهور</p>
                     </div>
+
                 </div>
 
-                <!-- Charts Row -->
+                <!-- Charts Section -->
                 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    <!-- Daily Revenue Chart -->
-                    <div class="bg-slate-900 border border-slate-800/80 rounded-2xl p-6">
-                        <div class="flex items-center justify-between mb-4">
-                            <h2 id="chartTitleRevenue" class="text-base font-bold text-white flex items-center gap-2">
-                                <span>💵 مسار الأرباح اليومية (بالدرهم المغربي)</span>
-                            </h2>
-                            <span class="text-xs text-slate-400 font-num">MAD</span>
+                    <!-- Daily Revenue Chart (MAD) -->
+                    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-lg">
+                        <div class="flex items-center justify-between mb-6">
+                            <div>
+                                <h3 id="chartTitleRevenue" class="text-sm font-bold text-white flex items-center gap-2">
+                                    <span>💰</span> منحنى الأرباح اليومية (بالدرهم المغربي)
+                                </h3>
+                                <p class="text-xs text-slate-400 mt-1 font-num">Make-Food.com AdSense Daily Revenue</p>
+                            </div>
+                            <span class="px-2 py-1 rounded bg-slate-800 text-[11px] text-emerald-400 font-bold font-num">MAD</span>
                         </div>
                         <div class="h-64">
-                            <canvas id="earningsChart"></canvas>
+                            <canvas id="revenueChart"></canvas>
                         </div>
                     </div>
 
-                    <!-- Traffic Chart -->
-                    <div class="bg-slate-900 border border-slate-800/80 rounded-2xl p-6">
-                        <div class="flex items-center justify-between mb-4">
-                            <h2 id="chartTitleTraffic" class="text-base font-bold text-white flex items-center gap-2">
-                                <span>📈 حركة المشاهدات والظهور اليومي</span>
-                            </h2>
-                            <span id="chartSubTraffic" class="text-xs text-slate-400">حجم الزيارات</span>
+                    <!-- Traffic & Impressions Chart -->
+                    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-lg">
+                        <div class="flex items-center justify-between mb-6">
+                            <div>
+                                <h3 id="chartTitleTraffic" class="text-sm font-bold text-white flex items-center gap-2">
+                                    <span>📈</span> منحنى المشاهدات والظهور اليومي
+                                </h3>
+                                <p id="chartTitleTrafficSub" class="text-xs text-slate-400 mt-1">تطور الترافيك</p>
+                            </div>
+                            <span class="px-2 py-1 rounded bg-slate-800 text-[11px] text-slate-400 font-num">Views & Imps</span>
                         </div>
                         <div class="h-64">
                             <canvas id="trafficChart"></canvas>
@@ -839,97 +1161,115 @@ async def dashboard_page(request: Request):
                     </div>
                 </div>
 
-                <!-- Breakdown: Countries & Devices -->
+                <!-- Countries & Daily Breakdown Tables -->
                 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                    <!-- Countries Table -->
-                    <div class="lg:col-span-2 bg-slate-900 border border-slate-800/80 rounded-2xl p-6">
-                        <div class="flex items-center justify-between mb-4">
-                            <h2 id="tableTitleCountries" class="text-base font-bold text-white">🌍 توزيع الأرباح حسب الدول</h2>
-                            <span id="tableSubCountries" class="text-xs text-slate-400">مرتبة حسب العائد</span>
-                        </div>
-                        <div class="overflow-x-auto">
+                    
+                    <!-- Top Countries -->
+                    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-lg">
+                        <h3 id="tableTitleCountries" class="text-sm font-bold text-white mb-1 flex items-center gap-2">
+                            <span>🌍</span> مصادر الزيارات حسب الدول
+                        </h3>
+                        <p id="tableTitleCountriesSub" class="text-xs text-slate-400 mb-4">الأكثر جلباً للترافيك</p>
+                        <div class="overflow-x-auto max-h-72 custom-scrollbar">
                             <table class="w-full text-right text-sm" id="countriesTableTag">
-                                <thead class="text-xs uppercase text-slate-400 border-b border-slate-800">
-                                    <tr>
-                                        <th id="thCountry" class="py-3 px-3">الدولة</th>
-                                        <th id="thViews" class="py-3 px-3 text-left">المشاهدات</th>
-                                        <th id="thImps" class="py-3 px-3 text-left">الظهور</th>
-                                        <th id="thEarn" class="py-3 px-3 text-left">الأرباح (د.م.)</th>
+                                <thead>
+                                    <tr class="text-slate-400 text-xs border-b border-slate-800">
+                                        <th id="thCountry" class="pb-2 font-semibold">الدولة</th>
+                                        <th id="thViews" class="pb-2 font-semibold font-num">الزيارات</th>
+                                        <th id="thEarnings" class="pb-2 font-semibold font-num">الربح (MAD)</th>
                                     </tr>
                                 </thead>
-                                <tbody id="countryTableBody" class="divide-y divide-slate-800/60 text-slate-300">
-                                    <tr><td colspan="4" class="py-4 text-center text-slate-500">جاري تحميل البيانات...</td></tr>
+                                <tbody id="countriesTableBody" class="divide-y divide-slate-800/60 font-num">
+                                    <tr><td colspan="3" class="py-4 text-center text-slate-500 text-xs">جاري التحميل...</td></tr>
                                 </tbody>
                             </table>
                         </div>
                     </div>
 
-                    <!-- Device Breakdown -->
-                    <div class="bg-slate-900 border border-slate-800/80 rounded-2xl p-6 flex flex-col justify-between">
-                        <div>
-                            <div class="flex items-center justify-between mb-4">
-                                <h2 id="chartTitleDevices" class="text-base font-bold text-white">📱 توزيع الأجهزة</h2>
-                                <span id="chartSubDevices" class="text-xs text-slate-400">الهاتف مقابل الحاسوب</span>
+                    <!-- Daily Performance Log Table -->
+                    <div class="col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-lg">
+                        <div class="flex items-center justify-between mb-4">
+                            <div>
+                                <h3 id="tableTitleDaily" class="text-sm font-bold text-white flex items-center gap-2">
+                                    <span>📅</span> التقرير اليومي المفصل للأداء
+                                </h3>
+                                <p id="tableTitleDailySub" class="text-xs text-slate-400 mt-1">مداخيل كل يوم بالدرهم المغربي</p>
                             </div>
-                            <div class="h-48 flex items-center justify-center">
-                                <canvas id="platformChart"></canvas>
-                            </div>
+                            <button onclick="exportDailyCSV()" id="btnExportCSV" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 font-num flex items-center gap-1 transition">
+                                <span>📥</span> <span>Export CSV</span>
+                            </button>
                         </div>
-                        <div id="platformCards" class="grid grid-cols-3 gap-2 mt-4 pt-4 border-t border-slate-800 text-center font-num">
+                        <div class="overflow-x-auto max-h-72 custom-scrollbar">
+                            <table class="w-full text-right text-sm" id="dailyTableTag">
+                                <thead>
+                                    <tr class="text-slate-400 text-xs border-b border-slate-800">
+                                        <th id="thDate" class="pb-2 font-semibold font-num">التاريخ</th>
+                                        <th id="thDayViews" class="pb-2 font-semibold font-num">المشاهدات</th>
+                                        <th id="thDayRPM" class="pb-2 font-semibold font-num">الـ RPM</th>
+                                        <th id="thDayImps" class="pb-2 font-semibold font-num">الظهور</th>
+                                        <th id="thDayClicks" class="pb-2 font-semibold font-num">النقرات</th>
+                                        <th id="thDayEarn" class="pb-2 font-semibold font-num">الأرباح (MAD)</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="dailyTableBody" class="divide-y divide-slate-800/60 font-num">
+                                    <tr><td colspan="6" class="py-4 text-center text-slate-500 text-xs">جاري التحميل...</td></tr>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
+
                 </div>
 
-                <!-- Daily Breakdown Log Table -->
-                <div class="bg-slate-900 border border-slate-800/80 rounded-2xl p-6">
-                    <div class="flex items-center justify-between mb-4">
-                        <h2 id="tableTitleDaily" class="text-base font-bold text-white">📅 السجل اليومي للأرباح والمشاهدات</h2>
-                        <button onclick="exportCSV()" class="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-bold transition flex items-center gap-1.5">
-                            <span>📥</span> <span id="btnTextExport">تصدير ملف Excel / CSV</span>
-                        </button>
-                    </div>
-                    <div class="overflow-x-auto max-h-96">
-                        <table class="w-full text-right text-sm" id="dailyTableTag">
-                            <thead class="text-xs uppercase text-slate-400 border-b border-slate-800 sticky top-0 bg-slate-900">
-                                <tr>
-                                    <th id="thDDate" class="py-3 px-4">التاريخ</th>
-                                    <th id="thDEarn" class="py-3 px-4 text-left">الأرباح (د.م.)</th>
-                                    <th id="thDViews" class="py-3 px-4 text-left">المشاهدات</th>
-                                    <th id="thDRpm" class="py-3 px-4 text-left">الـ RPM (د.م.)</th>
-                                    <th id="thDImps" class="py-3 px-4 text-left">الظهور</th>
-                                    <th id="thDClicks" class="py-3 px-4 text-left">النقرات</th>
-                                </tr>
-                            </thead>
-                            <tbody id="dailyTableBody" class="divide-y divide-slate-800/60 text-slate-300 font-num text-xs">
-                                <tr><td colspan="6" class="py-4 text-center text-slate-500">جاري تحميل البيانات...</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
             </div>
 
-            <!-- ================= TAB 2: POSTS & RECIPES LIST ================= -->
+            <!-- ================= TAB 2: POSTS & RECIPES FULL CRUD ================= -->
             <div id="tab-recipes" class="hidden space-y-6">
-                <div class="flex flex-col sm:flex-row items-center justify-between gap-4 bg-slate-900/60 border border-slate-800/80 p-4 rounded-2xl">
+                
+                <!-- Controls Bar -->
+                <div class="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4 bg-slate-900/60 border border-slate-800/80 p-5 rounded-2xl">
                     <div>
                         <div class="flex items-center gap-2">
                             <h2 id="recipesListTitle" class="text-base font-bold text-white">جميع مقالات ووصفات make-food.com</h2>
-                            <span id="recipes-count-badge" class="px-2 py-0.5 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-num">
+                            <span id="recipes-count-badge" class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-num">
                                 1,181
                             </span>
                         </div>
-                        <p id="recipesListSub" class="text-xs text-slate-400 mt-1">تصفح، ابحث وشاهد المقالات المنشورة حياً على الموقع</p>
+                        <p id="recipesListSub" class="text-xs text-slate-400 mt-1">تصفح، ابحث، عدّل أو احذف أي وصفة مع نشر فوري وتلقائي على الموقع الحي</p>
                     </div>
-                    <div class="w-full sm:w-72">
-                        <input type="text" id="recipeSearchInput" onkeyup="handleRecipeSearch()"
-                            placeholder="🔍 ابحث عن أي وصفة أو تصنيف..."
-                            class="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-xl text-white placeholder-slate-500 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500 transition">
+
+                    <!-- Search, Category Filter, and Add Button -->
+                    <div class="flex flex-wrap items-center gap-2.5">
+                        <div class="w-full sm:w-56">
+                            <input type="text" id="recipeSearchInput" onkeyup="handleRecipeSearch()"
+                                placeholder="🔍 ابحث عن أي وصفة..."
+                                class="w-full px-3.5 py-2 bg-slate-800 border border-slate-700 rounded-xl text-white placeholder-slate-500 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500 transition">
+                        </div>
+                        
+                        <div class="w-full sm:w-40">
+                            <select id="recipeCategoryFilter" onchange="handleCategoryFilter()"
+                                class="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-white text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500 transition font-num">
+                                <option value="all">كل التصنيفات (All)</option>
+                            </select>
+                        </div>
+
+                        <button onclick="switchTab('create')" id="btnHeaderNewPost"
+                            class="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl text-xs shadow-md shadow-emerald-500/20 transition flex items-center gap-1.5 whitespace-nowrap">
+                            <span>➕</span> <span id="btnHeaderNewPostText">مقال جديد</span>
+                        </button>
                     </div>
                 </div>
 
                 <!-- Recipes Grid -->
                 <div id="recipesGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     <div class="col-span-3 text-center py-12 text-slate-500">جاري تحميل الوصفات...</div>
+                </div>
+
+                <!-- Load More Button -->
+                <div id="loadMoreContainer" class="text-center py-4 hidden">
+                    <button onclick="loadMoreRecipes()" id="btnLoadMore"
+                        class="px-6 py-2.5 bg-slate-900 hover:bg-slate-800 border border-slate-700 rounded-xl text-xs font-bold text-slate-300 hover:text-white transition shadow-lg">
+                        <span>⬇️</span> <span id="btnLoadMoreText">تحميل المزيد من الوصفات</span>
+                    </button>
                 </div>
             </div>
 
@@ -1001,154 +1341,155 @@ async def dashboard_page(request: Request):
                         <!-- Title & Slug -->
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div>
-                                <label id="lblPostTitle" class="block text-xs font-bold text-slate-300 mb-2">عنوان الوصفة / المقال *</label>
-                                <input type="text" id="postTitle" required onkeyup="autoSlug()"
-                                    placeholder="e.g. Crispy Garlic Parmesan Chicken Wings"
-                                    class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 transition font-num text-left" dir="ltr">
+                                <label id="lblPostTitle" class="block text-xs font-bold text-slate-300 mb-2">عنوان المقال (Title) *</label>
+                                <input type="text" id="postTitle" required onkeyup="autoSlug()" dir="ltr"
+                                    placeholder="e.g. Garlic Butter Roast Chicken"
+                                    class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 text-left font-num">
                             </div>
                             <div>
-                                <label id="lblPostSlug" class="block text-xs font-bold text-slate-300 mb-2">رابط المقال (Slug) *</label>
-                                <div class="flex items-center bg-slate-800 border border-slate-700 rounded-xl px-3 text-slate-500 text-xs font-num" dir="ltr">
-                                    <span>make-food.com/</span>
-                                    <input type="text" id="postSlug" required
-                                        placeholder="crispy-garlic-chicken-wings"
-                                        class="w-full py-2.5 bg-transparent text-emerald-400 font-bold focus:outline-none text-left">
-                                </div>
+                                <label id="lblPostSlug" class="block text-xs font-bold text-slate-300 mb-2">الرابط الدائم (Slug) *</label>
+                                <input type="text" id="postSlug" required dir="ltr"
+                                    placeholder="garlic-butter-roast-chicken"
+                                    class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 text-left font-num">
                             </div>
                         </div>
 
-                        <!-- Category & Author & Image -->
+                        <!-- Category, Author & Featured Image -->
                         <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
                             <div>
                                 <label id="lblPostCategory" class="block text-xs font-bold text-slate-300 mb-2">التصنيف (Category)</label>
-                                <select id="postCategory" class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 transition">
-                                    <option value="Dinner">Dinner (عشاء)</option>
-                                    <option value="Breakfast">Breakfast (فطور)</option>
-                                    <option value="Lunch">Lunch (غداء)</option>
-                                    <option value="Dessert">Dessert (حلويات)</option>
-                                    <option value="Salad">Salad (سلطات)</option>
-                                    <option value="Soup">Soup (شوربات)</option>
-                                    <option value="Snack">Snack (وجبات خفيفة)</option>
+                                <select id="postCategory" class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 font-num">
+                                    <option value="Dinner">Dinner</option>
+                                    <option value="Breakfast">Breakfast</option>
+                                    <option value="Dessert">Dessert</option>
+                                    <option value="Appetizer">Appetizer</option>
+                                    <option value="Salad">Salad</option>
+                                    <option value="Soup">Soup</option>
+                                    <option value="Pasta">Pasta</option>
+                                    <option value="Seafood">Seafood</option>
+                                    <option value="Chicken">Chicken</option>
+                                    <option value="Beef">Beef</option>
                                 </select>
                             </div>
                             <div>
                                 <label id="lblPostAuthor" class="block text-xs font-bold text-slate-300 mb-2">اسم الكاتب (Author)</label>
-                                <input type="text" id="postAuthor" value="Maria"
-                                    class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 transition font-num text-left" dir="ltr">
+                                <input type="text" id="postAuthor" value="Maria" dir="ltr"
+                                    class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 text-left font-num">
                             </div>
                             <div>
                                 <label id="lblPostImage" class="block text-xs font-bold text-slate-300 mb-2">رابط الصورة البارزة (Image URL)</label>
-                                <input type="url" id="postImage" onchange="previewImage()"
-                                    placeholder="https://images.unsplash.com/..."
-                                    class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500 transition font-num text-left" dir="ltr">
+                                <input type="url" id="postImage" onchange="previewImage()" dir="ltr"
+                                    placeholder="https://images.unsplash.com/photo-..."
+                                    class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 text-left font-num">
                             </div>
                         </div>
 
                         <!-- Image Preview Box -->
                         <div id="imagePreviewBox" class="hidden">
-                            <label class="block text-xs font-bold text-slate-400 mb-1">معاينة الصورة البارزة:</label>
-                            <img id="imagePreviewEl" src="" alt="Preview" class="h-44 w-full object-cover rounded-xl border border-slate-700">
+                            <img id="imagePreviewEl" src="" alt="Preview" class="w-full max-h-48 object-cover rounded-xl border border-slate-800">
                         </div>
 
-                        <!-- Timings & Servings -->
-                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 bg-slate-800/40 p-4 rounded-xl border border-slate-800">
+                        <!-- Cooking Timers & Servings -->
+                        <div class="grid grid-cols-3 gap-4 bg-slate-800/40 p-4 rounded-xl border border-slate-800 text-center font-num">
                             <div>
-                                <label id="lblPrepTime" class="block text-xs font-bold text-slate-300 mb-1">وقت التحضير (بالدقائق)</label>
+                                <label id="lblPrepTime" class="block text-xs font-semibold text-slate-400 mb-1">وقت التحضير (دقيقة)</label>
                                 <input type="number" id="postPrepTime" value="15" min="1"
-                                    class="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm font-num text-center">
+                                    class="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-white text-center text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
                             </div>
                             <div>
-                                <label id="lblCookTime" class="block text-xs font-bold text-slate-300 mb-1">وقت الطهي (بالدقائق)</label>
-                                <input type="number" id="postCookTime" value="25" min="0"
-                                    class="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm font-num text-center">
+                                <label id="lblCookTime" class="block text-xs font-semibold text-slate-400 mb-1">وقت الطهي (دقيقة)</label>
+                                <input type="number" id="postCookTime" value="25" min="1"
+                                    class="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-white text-center text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
                             </div>
                             <div>
-                                <label id="lblServings" class="block text-xs font-bold text-slate-300 mb-1">عدد الحصص (Servings)</label>
+                                <label id="lblServings" class="block text-xs font-semibold text-slate-400 mb-1">عدد الحصص</label>
                                 <input type="number" id="postServings" value="4" min="1"
-                                    class="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm font-num text-center">
+                                    class="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-white text-center text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
                             </div>
                         </div>
 
-                        <!-- Short Description -->
+                        <!-- Description (SEO Meta) -->
                         <div>
-                            <label id="lblPostDesc" class="block text-xs font-bold text-slate-300 mb-2">مقدمة ووصف مختصر للوصفة (Excerpt / Description) *</label>
-                            <textarea id="postDescription" rows="2" required
-                                placeholder="اكتب وصفاً جذاباً ومختصراً يصف هذه الوصفة..."
-                                class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"></textarea>
+                            <label id="lblPostDesc" class="block text-xs font-bold text-slate-300 mb-2">الوصف التعريفي (SEO Meta Description)</label>
+                            <textarea id="postDescription" rows="2" dir="ltr"
+                                placeholder="A mouthwatering recipe featuring tender chicken with crispy skin..."
+                                class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500 text-left font-num"></textarea>
                         </div>
 
-                        <!-- Ingredients Builder -->
-                        <div>
-                            <div class="flex items-center justify-between mb-2">
-                                <label id="lblPostIngs" class="text-xs font-bold text-slate-300">المكونات (Ingredients) — سطر لكل مكون *</label>
-                                <span class="text-[11px] text-slate-400">مثال: 500g Chicken breast, sliced</span>
+                        <!-- Ingredients & Instructions -->
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div>
+                                <label id="lblPostIngs" class="block text-xs font-bold text-slate-300 mb-2">المكونات (سطر لكل مكون) *</label>
+                                <textarea id="postIngredients" rows="7" required dir="ltr"
+                                    placeholder="1 whole chicken&#10;4 tbsp butter&#10;4 cloves garlic, minced&#10;1 tsp rosemary&#10;Salt and black pepper to taste"
+                                    class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500 text-left"></textarea>
                             </div>
-                            <textarea id="postIngredients" rows="4" required dir="ltr"
-                                placeholder="2 tbsp olive oil&#10;1 tsp smoked paprika&#10;3 cloves garlic, minced&#10;Salt and freshly cracked black pepper"
-                                class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500 transition font-num text-left"></textarea>
-                        </div>
-
-                        <!-- Instructions Builder -->
-                        <div>
-                            <div class="flex items-center justify-between mb-2">
-                                <label id="lblPostSteps" class="text-xs font-bold text-slate-300">خطوات التحضير (Instructions / Steps) — سطر لكل خطوة *</label>
-                                <span id="lblPostStepsSub" class="text-[11px] text-slate-400">يتم ترقيمها تلقائياً</span>
+                            <div>
+                                <label id="lblPostSteps" class="block text-xs font-bold text-slate-300 mb-2">خطوات التحضير (سطر لكل خطوة) *</label>
+                                <textarea id="postInstructions" rows="7" required dir="ltr"
+                                    placeholder="Preheat oven to 400°F (200°C).&#10;Pat chicken dry with paper towels.&#10;Rub butter, garlic and herbs under skin.&#10;Roast for 50-60 minutes until golden.&#10;Rest for 10 minutes before carving."
+                                    class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500 text-left"></textarea>
                             </div>
-                            <textarea id="postInstructions" rows="4" required dir="ltr"
-                                placeholder="Preheat the oven to 400°F (200°C) and line a baking sheet.&#10;In a large bowl, toss the ingredients until evenly coated.&#10;Spread evenly on the baking sheet and bake for 25 minutes until golden brown."
-                                class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500 transition font-num text-left"></textarea>
                         </div>
 
-                        <!-- Article Body HTML -->
+                        <!-- Full Article HTML Content -->
                         <div>
-                            <label id="lblPostHtml" class="block text-xs font-bold text-slate-300 mb-2">نص المقال الكامل (Article Body / HTML) [اختياري]</label>
-                            <textarea id="postArticleHtml" rows="5" dir="ltr"
-                                placeholder="<p>This easy chicken recipe is perfect for busy weeknights...</p><h3>Why You Will Love This Recipe</h3><p>...</p>"
-                                class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500 transition font-mono text-left"></textarea>
+                            <label id="lblPostHtml" class="block text-xs font-bold text-slate-300 mb-2">محتوى المقالة الكامل (Article HTML Content)</label>
+                            <textarea id="postHtml" rows="8" dir="ltr"
+                                placeholder="<p>Introduction text...</p>&#10;<h2>Why This Recipe Works</h2>&#10;<p>...</p>"
+                                class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500 text-left"></textarea>
                         </div>
 
                         <!-- Submit Button -->
                         <div class="pt-4 border-t border-slate-800 flex items-center justify-between">
-                            <p class="text-xs text-slate-400 flex items-center gap-1.5">
-                                <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                                <span id="publishNoteText">سيتم نشر المقال فورياً وتحديث النطاق الحي</span>
+                            <p class="text-xs text-slate-400">
+                                🚀 <span id="publishNoteText">سيتم النشر فورياً عبر Git وبناء الموقع الحي أوتوماتيكياً.</span>
                             </p>
-                            <button type="submit" id="btnPublish"
-                                class="py-3 px-8 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-extrabold rounded-xl shadow-lg shadow-emerald-500/25 transition duration-200 text-sm flex items-center gap-2">
-                                <span>🚀</span> <span id="btnTextPublish">نشر المقال في make-food.com</span>
+                            <button type="submit" id="btnPublishRecipe"
+                                class="py-3 px-8 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-extrabold rounded-xl shadow-lg shadow-emerald-500/25 transition text-sm flex items-center gap-2">
+                                <span>🚀</span> <span id="btnTextPublish">نشر الوصفة مباشرة على make-food.com</span>
                             </button>
                         </div>
                     </form>
+
                 </div>
             </div>
 
-            <!-- ================= TAB 4: SETTINGS (AI & PROVIDERS) ================= -->
-            <div id="tab-settings" class="hidden space-y-6">
+            <!-- ================= TAB 4: AI SETTINGS & MODEL FETCHER ================= -->
+            <div id="tab-settings" class="space-y-6">
                 <div class="bg-slate-900 border border-slate-800/80 rounded-2xl p-6 sm:p-8 max-w-3xl mx-auto space-y-6">
-                    <div class="border-b border-slate-800 pb-4 flex items-center justify-between">
-                        <div>
-                            <h2 id="settingsTitle" class="text-lg font-bold text-white">⚙️ إعدادات الذكاء الاصطناعي (AI Provider Settings)</h2>
-                            <p id="settingsSub" class="text-xs text-slate-400 mt-1">اختر مزود الذكاء الاصطناعي (Google Gemini أو OpenRouter) وقم بجلب النماذج لكتابة المقالات</p>
-                        </div>
-                        <span class="text-2xl">🤖</span>
+                    <div>
+                        <h3 id="settingsTitle" class="text-base font-bold text-white flex items-center gap-2">
+                            <span>⚙️</span> إعدادات نماذج الذكاء الاصطناعي (AI Provider & Models)
+                        </h3>
+                        <p id="settingsSub" class="text-xs text-slate-400 mt-1">
+                            قم بربط مفتاح الـ API الخاص بك لجلب الموديلات المتوفرة وكتابة الوصفات تلقائياً.
+                        </p>
                     </div>
 
                     <!-- Provider Selector -->
                     <div>
-                        <label id="lblProvider" class="block text-xs font-bold text-slate-300 mb-2">مزود الخدمة (AI Provider)</label>
+                        <label id="lblProvider" class="block text-xs font-bold text-slate-300 mb-2">اختر مزود الذكاء الاصطناعي (Provider)</label>
                         <div class="grid grid-cols-2 gap-4">
-                            <label class="flex items-center gap-3 p-3.5 bg-slate-800/80 border border-slate-700 rounded-xl cursor-pointer hover:border-emerald-500/50 transition">
-                                <input type="radio" name="aiProvider" value="google" checked onchange="onProviderChange()" class="text-emerald-500 focus:ring-emerald-500">
+                            <label class="flex items-center gap-3 p-3 bg-slate-800/80 border border-slate-700 rounded-xl cursor-pointer hover:border-emerald-500/50 transition">
+                                <input type="radio" name="ai_provider" value="google" checked onchange="handleProviderChange()" class="text-emerald-500 focus:ring-emerald-500">
                                 <div>
-                                    <div class="text-sm font-bold text-white">Google Gemini API</div>
-                                    <div class="text-[11px] text-slate-400">Gemini 2.5 Flash / Pro (سريع ودقيق)</div>
+                                    <div class="text-sm font-bold text-white flex items-center gap-1.5">
+                                        <span>Google Gemini</span>
+                                        <span class="text-[10px] bg-blue-500/10 text-blue-400 px-1.5 py-0.5 rounded font-num">Recommended</span>
+                                    </div>
+                                    <div class="text-[11px] text-slate-400">Gemini 1.5 Pro / Flash API</div>
                                 </div>
                             </label>
-                            <label class="flex items-center gap-3 p-3.5 bg-slate-800/80 border border-slate-700 rounded-xl cursor-pointer hover:border-emerald-500/50 transition">
-                                <input type="radio" name="aiProvider" value="openrouter" onchange="onProviderChange()" class="text-emerald-500 focus:ring-emerald-500">
+                            
+                            <label class="flex items-center gap-3 p-3 bg-slate-800/80 border border-slate-700 rounded-xl cursor-pointer hover:border-emerald-500/50 transition">
+                                <input type="radio" name="ai_provider" value="openrouter" onchange="handleProviderChange()" class="text-emerald-500 focus:ring-emerald-500">
                                 <div>
-                                    <div class="text-sm font-bold text-white">OpenRouter API</div>
-                                    <div class="text-[11px] text-slate-400">Claude 3.5, GPT-4o, DeepSeek, Llama</div>
+                                    <div class="text-sm font-bold text-white flex items-center gap-1.5">
+                                        <span>OpenRouter</span>
+                                        <span class="text-[10px] bg-purple-500/10 text-purple-400 px-1.5 py-0.5 rounded font-num">Multi-model</span>
+                                    </div>
+                                    <div class="text-[11px] text-slate-400">Claude, GPT-4o, Llama 3...</div>
                                 </div>
                             </label>
                         </div>
@@ -1156,182 +1497,331 @@ async def dashboard_page(request: Request):
 
                     <!-- API Key Input -->
                     <div>
-                        <label id="lblApiKey" class="block text-xs font-bold text-slate-300 mb-2">مفتاح الـ API (API Key) *</label>
-                        <div class="relative">
-                            <input type="password" id="inputApiKey" dir="ltr"
-                                placeholder="AIzaSy... or sk-or-v1-..."
-                                class="w-full px-4 py-3 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 text-left font-num">
-                            <button type="button" onclick="toggleApiKeyVisibility()" class="absolute right-3 top-3 text-xs text-slate-400 hover:text-white">
-                                👁️
+                        <div class="flex items-center justify-between mb-2">
+                            <label id="lblApiKey" class="text-xs font-bold text-slate-300">مفتاح الـ API (API Key)</label>
+                            <span id="apiKeyHint" class="text-[11px] text-slate-500 font-num">Key is stored locally in your browser</span>
+                        </div>
+                        <div class="flex gap-2">
+                            <input type="password" id="userApiKey" dir="ltr"
+                                placeholder="AIzaSy... / sk-or-v1-..."
+                                class="flex-1 px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500 text-left">
+                            <button type="button" onclick="saveApiKey()" id="btnSaveKey"
+                                class="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-bold rounded-xl transition">
+                                حفظ المفتاح
                             </button>
                         </div>
-                        <p class="text-[11px] text-slate-400 mt-1.5">
-                            🔒 <span id="apiKeySafetyNote">يتم حفظ المفتاح بأمان في متصفحك ولا يتم مشاركته مع أي طرف خارجي.</span>
-                        </p>
                     </div>
 
-                    <!-- Fetch Models Button & Dropdown -->
-                    <div class="p-4 bg-slate-800/40 rounded-xl border border-slate-800 space-y-4">
+                    <!-- Model Selection & Fetch Button -->
+                    <div class="bg-slate-800/40 p-4 rounded-xl border border-slate-800 space-y-3">
                         <div class="flex items-center justify-between">
                             <div>
-                                <h4 id="fetchModelsTitle" class="text-xs font-bold text-white">النماذج المتاحة (Available Models)</h4>
-                                <p id="fetchModelsSub" class="text-[11px] text-slate-400">اضغط على جلب النماذج لاسترداد القائمة الكاملة المتاحة لحسابك</p>
+                                <label id="lblModelSelect" class="block text-xs font-bold text-white">الموديل المختار للكتابة (Active Model)</label>
+                                <p id="lblModelSelectSub" class="text-[11px] text-slate-400">انقر على جلب الموديلات لتحديث القائمة مباشرة من حسابك</p>
                             </div>
-                            <button type="button" onclick="fetchModelsFromApi()" id="btnFetchModels"
-                                class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5">
-                                <span>🔄</span> <span id="btnTextFetchModels">جلب النماذج (Fetch Models)</span>
+                            <button type="button" onclick="fetchAvailableModels()" id="btnFetchModels"
+                                class="py-2 px-4 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 rounded-xl text-xs font-bold transition flex items-center gap-1.5 font-num">
+                                <span>🔄</span> <span id="btnTextFetchModels">جلب الموديلات المتوفرة (Fetch Models)</span>
                             </button>
                         </div>
 
-                        <div>
-                            <select id="selectModel" class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-xs font-num focus:outline-none focus:ring-2 focus:ring-emerald-500">
-                                <option value="gemini-2.5-flash">Gemini 2.5 Flash (افتراضي موصى به)</option>
-                                <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
-                                <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
-                            </select>
-                        </div>
+                        <select id="selectedAiModel" onchange="saveActiveModel()"
+                            class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                            <option value="gemini-1.5-flash">gemini-1.5-flash (Default Fast)</option>
+                            <option value="gemini-1.5-pro">gemini-1.5-pro (High Quality)</option>
+                        </select>
                     </div>
 
-                    <!-- Save Settings Button -->
-                    <div class="pt-4 border-t border-slate-800 flex items-center justify-between">
-                        <span id="saveStatusMsg" class="text-xs text-emerald-400 font-bold"></span>
-                        <button type="button" onclick="saveAiSettings()"
-                            class="py-3 px-8 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-extrabold rounded-xl shadow-lg shadow-emerald-500/25 transition text-sm">
-                            <span id="btnTextSaveSettings">💾 حفظ الإعدادات</span>
-                        </button>
+                    <div class="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-300 flex items-start gap-2">
+                        <span class="text-base">🔒</span>
+                        <p id="securityNoteText">
+                            مفتاح الـ API ديالك كيتحفظ بأمان فـ LocalStorage ديال المتصفح ديالك فقط، وماكيتخزنش فـ شي قاعدة بيانات خارجية.
+                        </p>
                     </div>
                 </div>
             </div>
+
         </main>
 
-        <footer class="border-t border-slate-800/80 py-6 mt-12 text-center text-xs text-slate-500">
-            Make-Food.com Partner Portal • أرباح AdSense بالدرهم المغربي MAD 🇲🇦 • محرك كتابة الوصفات بالذكاء الاصطناعي
-        </footer>
+        <!-- ================= EDIT RECIPE MODAL (UPDATE) ================= -->
+        <div id="editRecipeModal" class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md hidden items-center justify-center p-4">
+            <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-4xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
+                
+                <!-- Modal Header -->
+                <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-900/90">
+                    <div class="flex items-center gap-2">
+                        <span class="text-xl">✏️</span>
+                        <div>
+                            <h3 id="modalEditTitle" class="text-base font-bold text-white">تعديل الوصفة / Edit Recipe</h3>
+                            <p id="modalEditSub" class="text-xs text-slate-400">تعديل المقال ونشره مباشرة على make-food.com</p>
+                        </div>
+                    </div>
+                    <button onclick="closeEditModal()" class="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition">
+                        ✕
+                    </button>
+                </div>
 
-        <!-- JS Logic with i18n Dictionary -->
+                <!-- Modal Body (Scrollable) -->
+                <form id="editRecipeForm" onsubmit="handleUpdateRecipe(event)" class="overflow-y-auto p-6 space-y-5 custom-scrollbar">
+                    <input type="hidden" id="editOriginalSlug">
+
+                    <!-- Title & Slug -->
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 mb-1">عنوان المقال (Title) *</label>
+                            <input type="text" id="editTitle" required dir="ltr"
+                                class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 font-num">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 mb-1">الرابط الدائم (Slug) *</label>
+                            <input type="text" id="editSlug" required dir="ltr"
+                                class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 font-num">
+                        </div>
+                    </div>
+
+                    <!-- Category, Author & Image -->
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 mb-1">التصنيف (Category)</label>
+                            <input type="text" id="editCategory" dir="ltr"
+                                class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 font-num">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 mb-1">اسم الكاتب (Author)</label>
+                            <input type="text" id="editAuthor" dir="ltr"
+                                class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 font-num">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 mb-1">رابط الصورة (Image URL)</label>
+                            <input type="url" id="editImage" dir="ltr" onchange="previewEditImage()"
+                                class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 font-num">
+                        </div>
+                    </div>
+
+                    <!-- Timers & Servings -->
+                    <div class="grid grid-cols-3 gap-4 bg-slate-800/40 p-4 rounded-xl border border-slate-800 text-center font-num">
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-400 mb-1">وقت التحضير (دقيقة)</label>
+                            <input type="number" id="editPrepTime" min="1"
+                                class="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-white text-center text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-400 mb-1">وقت الطهي (دقيقة)</label>
+                            <input type="number" id="editCookTime" min="1"
+                                class="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-white text-center text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-400 mb-1">عدد الحصص</label>
+                            <input type="number" id="editServings" min="1"
+                                class="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-white text-center text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                        </div>
+                    </div>
+
+                    <!-- Description -->
+                    <div>
+                        <label class="block text-xs font-bold text-slate-300 mb-1">الوصف التعريفي (Description / SEO)</label>
+                        <textarea id="editDescription" rows="2" dir="ltr"
+                            class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500 font-num"></textarea>
+                    </div>
+
+                    <!-- Ingredients & Steps -->
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 mb-1">المكونات (سطر لكل مكون) *</label>
+                            <textarea id="editIngredients" rows="7" required dir="ltr"
+                                class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"></textarea>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 mb-1">خطوات التحضير (سطر لكل خطوة) *</label>
+                            <textarea id="editInstructions" rows="7" required dir="ltr"
+                                class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"></textarea>
+                        </div>
+                    </div>
+
+                    <!-- Article HTML -->
+                    <div>
+                        <label class="block text-xs font-bold text-slate-300 mb-1">محتوى المقالة الكامل (Article HTML)</label>
+                        <textarea id="editHtml" rows="7" dir="ltr"
+                            class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"></textarea>
+                    </div>
+
+                    <!-- Modal Actions -->
+                    <div class="pt-4 border-t border-slate-800 flex items-center justify-end gap-3">
+                        <button type="button" onclick="closeEditModal()" id="btnCancelEdit"
+                            class="px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition">
+                            إلغاء / Cancel
+                        </button>
+                        <button type="submit" id="btnSaveEditRecipe"
+                            class="px-6 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs shadow-lg shadow-emerald-500/20 transition flex items-center gap-2">
+                            <span>💾</span> <span id="btnTextSaveEdit">حفظ التعديل وإعادة النشر</span>
+                        </button>
+                    </div>
+                </form>
+
+            </div>
+        </div>
+
+        <!-- ================= DELETE CONFIRMATION MODAL (DELETE) ================= -->
+        <div id="deleteConfirmModal" class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md hidden items-center justify-center p-4">
+            <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
+                <div class="w-12 h-12 rounded-2xl bg-rose-500/10 text-rose-400 border border-rose-500/20 flex items-center justify-center text-2xl mx-auto">
+                    🗑️
+                </div>
+                <div class="text-center">
+                    <h3 id="deleteModalTitle" class="text-base font-bold text-white">تأكيد حذف الوصفة / Confirm Deletion</h3>
+                    <p id="deleteModalSub" class="text-xs text-slate-400 mt-1">هل أنت متأكد من رغبتك في حذف هذا المقال نهائياً من الموقع الحي؟</p>
+                    <div id="deleteRecipeTargetTitle" class="mt-3 p-3 bg-slate-800/80 rounded-xl text-xs font-bold text-rose-300 font-num"></div>
+                </div>
+                <div class="flex items-center gap-3 pt-2">
+                    <button type="button" onclick="closeDeleteModal()" id="btnCancelDelete"
+                        class="flex-1 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition">
+                        إلغاء
+                    </button>
+                    <button type="button" onclick="executeDeleteRecipe()" id="btnConfirmDeleteAction"
+                        class="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-extrabold shadow-lg shadow-rose-600/25 transition flex items-center justify-center gap-1.5">
+                        <span>🗑️</span> <span id="btnTextConfirmDelete">نعم، احذف المقال</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Toast Notifications Container -->
+        <div id="toastContainer" class="fixed bottom-6 left-6 z-50 flex flex-col gap-2 pointer-events-none"></div>
+
+        <!-- Translation Dictionary & Core Frontend Script -->
         <script>
             let currentLang = localStorage.getItem('portal_lang') || 'ar';
             let currentRange = 'last30';
-            let earningsChart, trafficChart, platformChart;
-            let rawDailyData = [];
-            let allRecipesData = [];
+            let revenueChartInstance = null;
+            let trafficChartInstance = null;
             let currentAiMode = 'name';
+            
+            // Recipes list state
+            let allRecipesData = [];
+            let currentOffset = 0;
+            const pageSize = 30;
+            let selectedCategory = 'all';
+            let pendingDeleteSlug = null;
 
-            // Translations
             const dict = {
                 ar: {
-                    topSubtitle: "لوحة التحكم، النشر والمداخيل الحصرية",
+                    topSubtitle: "لوحة الشريك الخاصة بالإحصائيات والمقالات",
                     tabAnalytics: "الإحصائيات والأرباح",
-                    tabRecipes: "المقالات والوصفات",
-                    tabCreate: "نشر مقال جديد",
+                    tabRecipes: "المقالات والوصفات (CRUD)",
+                    tabCreate: "إنشاء مقال جديد",
                     tabSettings: "الإعدادات و الذكاء الاصطناعي",
                     logout: "خروج",
                     langBtn: "English",
-                    kpiTitle: "مؤشرات الأداء والأرباح لـ make-food.com",
-                    kpiSub: "مباشرة من Google AdSense Management API بعملة الدرهم المغربي (MAD)",
-                    earnings: "إجمالي الأرباح",
-                    earningsSub: "100% مؤكد من AdSense الرسمي",
-                    views: "مشاهدات الصفحات",
-                    viewsSub: "عدد قراءات المقالات",
-                    rpm: "معدل الربح (RPM)",
+                    kpiTitle: "مداخيل وزيارات الموقع الحي make-food.com",
+                    kpiSub: "مربوطة بـ Google AdSense Management API ومحسوبة بالدرهم المغربي (MAD)",
+                    earnings: "الأرباح المقدرة",
+                    earningsSub: "100% مباشرة من AdSense للموقع",
+                    views: "مشاهدات الصفحة",
+                    viewsSub: "عدد الزيارات الإجمالية",
+                    rpm: "معدل الألف (RPM)",
                     rpmSub: "الربح لكل 1,000 مشاهدة",
-                    impressions: "ظهور الإعلانات",
-                    impressionsSub: "مرات ظهور الإعلانات",
+                    impressions: "مرات الظهور",
+                    impressionsSub: "مرات عرض الإعلانات",
                     clicks: "النقرات (CTR)",
-                    clicksSub: "تفاعل الزوار مع الإعلانات",
-                    chartRevenue: "💵 مسار الأرباح اليومية (بالدرهم المغربي)",
-                    chartTraffic: "📈 حركة المشاهدات والظهور اليومي",
-                    chartTrafficSub: "حجم الزيارات",
-                    countriesTitle: "🌍 توزيع الأرباح حسب الدول",
-                    countriesSub: "مرتبة حسب العائد",
+                    clicksSub: "نسبة النقر إلى الظهور",
+                    chartRevenue: "💰 منحنى الأرباح اليومية (بالدرهم المغربي)",
+                    chartTraffic: "📈 منحنى المشاهدات والظهور اليومي",
+                    chartTrafficSub: "تطور الترافيك",
+                    countriesTitle: "🌍 مصادر الزيارات حسب الدول",
+                    countriesSub: "الأكثر جلباً للترافيك",
                     thCountry: "الدولة",
-                    thViews: "المشاهدات",
-                    thImps: "الظهور",
-                    thEarn: "الأرباح (د.م.)",
-                    devicesTitle: "📱 توزيع الأجهزة",
-                    devicesSub: "الهاتف مقابل الحاسوب",
-                    dailyTitle: "📅 السجل اليومي للأرباح والمشاهدات",
-                    btnExport: "تصدير ملف Excel / CSV",
+                    thViews: "الزيارات",
+                    thEarn: "الربح (MAD)",
+                    dailyTitle: "📅 التقرير اليومي المفصل للأداء",
+                    dailySub: "مداخيل كل يوم بالدرهم المغربي",
+                    thDate: "التاريخ",
+                    thDayViews: "المشاهدات",
+                    thDayRPM: "الـ RPM",
+                    thDayImps: "الظهور",
+                    thDayClicks: "النقرات",
+                    thDayEarn: "الأرباح (MAD)",
                     recipesTitle: "جميع مقالات ووصفات make-food.com",
-                    recipesSub: "تصفح، ابحث وشاهد المقالات المنشورة حياً على الموقع",
-                    searchPlaceholder: "🔍 ابحث عن أي وصفة أو تصنيف...",
-                    aiTitle: "المساعد الذكي لكتابة وإعادة صياغة الوصفات (AI Recipe Studio)",
-                    modeName: "💡 فقط باسم الوصفة",
-                    modeRewrite: "🔄 إعادة صياغة مقال / إلهام",
-                    lblAiName: "اكتب اسم الوصفة بالإنجليزية (مثال: Tuscan Garlic Butter Salmon):",
-                    lblAiRewrite: "ضع رابط أو نص المقال الخارجي لإعادة صياغته بطريقة حصرية واحترافية:",
-                    btnGenerateAi: "توليد الوصفة بالذكاء الاصطناعي",
-                    aiNote: "يقوم الذكاء الاصطناعي بتوليد العنوان، المكونات، الخطوات، وقت الطهي، ومقالة SEO كاملة.",
-                    formTitle: "تفاصيل المقال والوصفة لـ make-food.com",
-                    formSub: "راجع البيانات ثم اضغط نشر لتظهر فورياً على الموقع الحي",
-                    btnPublish: "نشر المقال في make-food.com",
-                    settingsTitle: "⚙️ إعدادات الذكاء الاصطناعي (AI Provider Settings)",
-                    settingsSub: "اختر مزود الذكاء الاصطناعي (Google Gemini أو OpenRouter) وقم بجلب النماذج لكتابة المقالات",
-                    lblProvider: "مزود الخدمة (AI Provider)",
-                    lblApiKey: "مفتاح الـ API (API Key) *",
-                    apiKeyNote: "يتم حفظ المفتاح بأمان في متصفحك ولا يتم مشاركته مع أي طرف خارجي.",
-                    fetchTitle: "النماذج المتاحة (Available Models)",
-                    fetchSub: "اضغط على جلب النماذج لاسترداد القائمة الكاملة المتاحة لحسابك",
-                    btnFetch: "جلب النماذج (Fetch Models)",
-                    btnSaveSettings: "💾 حفظ الإعدادات"
+                    recipesSub: "تصفح، ابحث، عدّل أو احذف أي وصفة مع نشر فوري وتلقائي على الموقع الحي",
+                    btnNewPost: "مقال جديد",
+                    loadMoreText: "تحميل المزيد من الوصفات",
+                    viewLive: "مشاهدة حية ↗",
+                    editRecipe: "تعديل",
+                    deleteRecipe: "حذف",
+                    modalEditTitle: "تعديل الوصفة",
+                    modalEditSub: "تعديل المقال ونشره مباشرة على make-food.com",
+                    btnCancel: "إلغاء",
+                    btnSaveEdit: "حفظ التعديل وإعادة النشر",
+                    deleteModalTitle: "تأكيد حذف الوصفة",
+                    deleteModalSub: "هل أنت متأكد من رغبتك في حذف هذا المقال نهائياً من الموقع الحي؟",
+                    btnConfirmDelete: "نعم، احذف المقال"
                 },
                 en: {
-                    topSubtitle: "Make-Food.com Partner Management & Revenue Portal",
+                    topSubtitle: "Make-Food.com Partner Management & Content Portal",
                     tabAnalytics: "Revenue & Analytics",
-                    tabRecipes: "Articles & Recipes",
+                    tabRecipes: "Articles & Recipes (CRUD)",
                     tabCreate: "Create New Post",
-                    tabSettings: "Settings & AI Models",
+                    tabSettings: "AI Settings & Models",
                     logout: "Logout",
                     langBtn: "العربية",
-                    kpiTitle: "Performance & Revenue Metrics for make-food.com",
-                    kpiSub: "Directly from Google AdSense Management API in Moroccan Dirhams (MAD)",
-                    earnings: "Total Revenue",
-                    earningsSub: "100% verified from official AdSense",
+                    kpiTitle: "Live Performance & Revenue for make-food.com",
+                    kpiSub: "Connected via Google AdSense Management API in Moroccan Dirham (MAD)",
+                    earnings: "Estimated Earnings",
+                    earningsSub: "100% direct from AdSense",
                     views: "Page Views",
-                    viewsSub: "Direct recipe article reads",
+                    viewsSub: "Total page impressions",
                     rpm: "Page RPM",
                     rpmSub: "Revenue per 1,000 views",
-                    impressions: "Ad Impressions",
-                    impressionsSub: "Ad impressions served",
+                    impressions: "Impressions",
+                    impressionsSub: "Ad impressions delivered",
                     clicks: "Clicks (CTR)",
-                    clicksSub: "User ad engagement",
-                    chartRevenue: "💵 Daily Revenue Trend (in MAD)",
+                    clicksSub: "Click-through rate",
+                    chartRevenue: "💰 Daily Revenue Trend (Moroccan Dirham MAD)",
                     chartTraffic: "📈 Daily Views & Impressions",
-                    chartTrafficSub: "Traffic volume",
-                    countriesTitle: "🌍 Top Countries by Performance",
-                    countriesSub: "Ranked by earnings",
+                    chartTrafficSub: "Traffic metrics",
+                    countriesTitle: "🌍 Traffic Breakdown by Country",
+                    countriesSub: "Top traffic sources",
                     thCountry: "Country",
-                    thViews: "Pageviews",
-                    thImps: "Impressions",
+                    thViews: "Views",
                     thEarn: "Earnings (MAD)",
-                    devicesTitle: "📱 Device Breakdown",
-                    devicesSub: "Mobile vs Desktop share",
-                    dailyTitle: "📅 Daily Detailed Revenue & Traffic Log",
-                    btnExport: "Export CSV / Excel",
+                    dailyTitle: "📅 Daily Performance Log",
+                    dailySub: "Daily revenue & metrics in MAD",
+                    thDate: "Date",
+                    thDayViews: "Views",
+                    thDayRPM: "RPM",
+                    thDayImps: "Imps",
+                    thDayClicks: "Clicks",
+                    thDayEarn: "Earnings (MAD)",
                     recipesTitle: "All Articles & Recipes for make-food.com",
-                    recipesSub: "Search, filter and view live articles on the website",
-                    searchPlaceholder: "🔍 Search recipes or categories...",
-                    aiTitle: "AI Recipe Authoring & Rewriting Studio",
-                    modeName: "💡 From Recipe Name",
-                    modeRewrite: "🔄 Rewrite from Inspiration",
-                    lblAiName: "Enter recipe name in English (e.g. Tuscan Garlic Butter Salmon):",
-                    lblAiRewrite: "Paste external article text or URL to rewrite into a unique recipe:",
-                    btnGenerateAi: "Generate Recipe with AI",
-                    aiNote: "AI will automatically generate the Title, Ingredients, Steps, Timings, and complete SEO story.",
-                    formTitle: "Recipe & Article Details for make-food.com",
-                    formSub: "Review generated content and click publish to deploy live instantly",
-                    btnPublish: "Publish to make-food.com Live",
-                    settingsTitle: "⚙️ AI Provider Settings & Model Selector",
-                    settingsSub: "Configure Google Gemini or OpenRouter API to fetch models and power recipe writing",
-                    lblProvider: "AI Provider",
-                    lblApiKey: "API Key *",
-                    apiKeyNote: "Your key is stored securely in your browser and used only for recipe generation.",
-                    fetchTitle: "Available Models",
-                    fetchSub: "Click Fetch Models to pull the latest models available for your account",
-                    btnFetch: "Fetch Models",
-                    btnSaveSettings: "💾 Save Settings"
+                    recipesSub: "Browse, search, edit, or delete any recipe with instant live deployment",
+                    btnNewPost: "New Recipe",
+                    loadMoreText: "Load More Recipes",
+                    viewLive: "View Live ↗",
+                    editRecipe: "Edit",
+                    deleteRecipe: "Delete",
+                    modalEditTitle: "Edit Recipe",
+                    modalEditSub: "Modify content and deploy directly to make-food.com",
+                    btnCancel: "Cancel",
+                    btnSaveEdit: "Save & Redeploy",
+                    deleteModalTitle: "Confirm Deletion",
+                    deleteModalSub: "Are you sure you want to permanently delete this recipe from make-food.com?",
+                    btnConfirmDelete: "Yes, Delete Recipe"
                 }
             };
+
+            function showToast(message, type = 'success') {
+                const container = document.getElementById('toastContainer');
+                const toast = document.createElement('div');
+                toast.className = `px-4 py-3 rounded-xl shadow-2xl text-xs font-bold text-white flex items-center gap-2 pointer-events-auto transition-all duration-300 transform translate-y-2 opacity-0 ${type === 'error' ? 'bg-rose-600 border border-rose-500' : 'bg-emerald-600 border border-emerald-500'}`;
+                toast.innerHTML = `<span>${type === 'error' ? '⚠️' : '✅'}</span> <span>${message}</span>`;
+                container.appendChild(toast);
+                setTimeout(() => {
+                    toast.classList.remove('translate-y-2', 'opacity-0');
+                }, 10);
+                setTimeout(() => {
+                    toast.classList.add('opacity-0');
+                    setTimeout(() => toast.remove(), 300);
+                }, 4000);
+            }
 
             function applyLanguage(lang) {
                 currentLang = lang;
@@ -1374,44 +1864,37 @@ async def dashboard_page(request: Request):
 
                 document.getElementById('chartTitleRevenue').innerText = t.chartRevenue;
                 document.getElementById('chartTitleTraffic').innerText = t.chartTraffic;
-                document.getElementById('chartSubTraffic').innerText = t.chartTrafficSub;
+                document.getElementById('chartTitleTrafficSub').innerText = t.chartTrafficSub;
                 document.getElementById('tableTitleCountries').innerText = t.countriesTitle;
-                document.getElementById('tableSubCountries').innerText = t.countriesSub;
+                document.getElementById('tableTitleCountriesSub').innerText = t.countriesSub;
                 document.getElementById('thCountry').innerText = t.thCountry;
                 document.getElementById('thViews').innerText = t.thViews;
-                document.getElementById('thImps').innerText = t.thImps;
-                document.getElementById('thEarn').innerText = t.thEarn;
+                document.getElementById('thEarnings').innerText = t.thEarn;
 
-                document.getElementById('chartTitleDevices').innerText = t.devicesTitle;
-                document.getElementById('chartSubDevices').innerText = t.devicesSub;
                 document.getElementById('tableTitleDaily').innerText = t.dailyTitle;
-                document.getElementById('btnTextExport').innerText = t.btnExport;
+                document.getElementById('tableTitleDailySub').innerText = t.dailySub;
+                document.getElementById('thDate').innerText = t.thDate;
+                document.getElementById('thDayViews').innerText = t.thDayViews;
+                document.getElementById('thDayRPM').innerText = t.thDayRPM;
+                document.getElementById('thDayImps').innerText = t.thDayImps;
+                document.getElementById('thDayClicks').innerText = t.thDayClicks;
+                document.getElementById('thDayEarn').innerText = t.thDayEarn;
 
                 document.getElementById('recipesListTitle').innerText = t.recipesTitle;
                 document.getElementById('recipesListSub').innerText = t.recipesSub;
-                document.getElementById('recipeSearchInput').placeholder = t.searchPlaceholder;
+                document.getElementById('btnHeaderNewPostText').innerText = t.btnNewPost;
+                document.getElementById('btnLoadMoreText').innerText = t.loadMoreText;
 
-                document.getElementById('aiStudioTitle').innerText = t.aiTitle;
-                document.getElementById('aiModeBtnName').innerText = t.modeName;
-                document.getElementById('aiModeBtnRewrite').innerText = t.modeRewrite;
-                document.getElementById('lblAiName').innerText = t.lblAiName;
-                document.getElementById('lblAiRewrite').innerText = t.lblAiRewrite;
-                document.getElementById('btnTextGenerateAi').innerText = t.btnGenerateAi;
-                document.getElementById('aiNoteText').innerText = t.aiNote;
+                document.getElementById('modalEditTitle').innerText = t.modalEditTitle;
+                document.getElementById('modalEditSub').innerText = t.modalEditSub;
+                document.getElementById('btnCancelEdit').innerText = t.btnCancel;
+                document.getElementById('btnTextSaveEdit').innerText = t.btnSaveEdit;
+                document.getElementById('deleteModalTitle').innerText = t.deleteModalTitle;
+                document.getElementById('deleteModalSub').innerText = t.deleteModalSub;
+                document.getElementById('btnCancelDelete').innerText = t.btnCancel;
+                document.getElementById('btnTextConfirmDelete').innerText = t.btnConfirmDelete;
 
-                document.getElementById('formSectionTitle').innerText = t.formTitle;
-                document.getElementById('formSectionSub').innerText = t.formSub;
-                document.getElementById('btnTextPublish').innerText = t.btnPublish;
-
-                document.getElementById('settingsTitle').innerText = t.settingsTitle;
-                document.getElementById('settingsSub').innerText = t.settingsSub;
-                document.getElementById('lblProvider').innerText = t.lblProvider;
-                document.getElementById('lblApiKey').innerText = t.lblApiKey;
-                document.getElementById('apiKeySafetyNote').innerText = t.apiKeyNote;
-                document.getElementById('fetchModelsTitle').innerText = t.fetchTitle;
-                document.getElementById('fetchModelsSub').innerText = t.fetchSub;
-                document.getElementById('btnTextFetchModels').innerText = t.btnFetch;
-                document.getElementById('btnTextSaveSettings').innerText = t.btnSaveSettings;
+                renderRecipesGrid(allRecipesData, false);
             }
 
             function toggleLanguage() {
@@ -1419,65 +1902,65 @@ async def dashboard_page(request: Request):
             }
 
             function switchTab(tabId) {
-                ['analytics', 'recipes', 'create', 'settings'].forEach(t => {
-                    document.getElementById('tab-' + t).classList.add('hidden');
-                    const btn = document.getElementById('tab-btn-' + t);
-                    btn.className = "px-3 py-1.5 rounded-lg text-slate-400 hover:text-white transition flex items-center gap-1.5";
+                ['analytics', 'recipes', 'create', 'settings'].forEach(id => {
+                    const tabEl = document.getElementById(`tab-${id}`);
+                    const navEl = document.getElementById(`nav-${id}`);
+                    if (id === tabId) {
+                        tabEl.classList.remove('hidden');
+                        navEl.className = "px-3 py-2 rounded-xl text-xs sm:text-sm font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 transition flex items-center gap-1.5";
+                    } else {
+                        tabEl.classList.add('hidden');
+                        navEl.className = "px-3 py-2 rounded-xl text-xs sm:text-sm font-semibold text-slate-400 hover:text-white hover:bg-slate-800/60 transition flex items-center gap-1.5";
+                    }
                 });
-                document.getElementById('tab-' + tabId).classList.remove('hidden');
-                document.getElementById('tab-btn-' + tabId).className = "px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 font-bold border border-emerald-500/20 transition flex items-center gap-1.5";
-
                 if (tabId === 'recipes' && allRecipesData.length === 0) {
-                    loadRecipesList();
+                    loadRecipesList(true);
                 }
             }
 
-            function setRange(range) {
+            async function loadStats(range) {
                 currentRange = range;
                 ['today', 'yesterday', 'last7', 'last30', 'month'].forEach(r => {
-                    const btn = document.getElementById('btn-' + r);
+                    const btn = document.getElementById(`btn-${r}`);
                     if (r === range) {
-                        btn.className = "px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 font-bold border border-emerald-500/20 transition";
+                        btn.className = "px-2.5 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30 transition";
                     } else {
-                        btn.className = "px-3 py-1.5 rounded-lg text-slate-400 hover:text-white transition";
+                        btn.className = "px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-white transition";
                     }
                 });
-                loadDashboardData();
-            }
 
-            async function loadDashboardData() {
                 try {
-                    const res = await fetch(`/api/stats?range=${currentRange}`);
-                    if (!res.ok) {
-                        if (res.status === 401) window.location.href = '/login';
-                        return;
-                    }
+                    const res = await fetch(`/api/stats?range=${range}`);
                     const data = await res.json();
-                    renderDashboard(data);
+                    
+                    document.getElementById('kpi-earnings').innerText = Number(data.totals.earnings).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                    document.getElementById('kpi-views').innerText = Number(data.totals.views).toLocaleString();
+                    document.getElementById('kpi-rpm').innerText = Number(data.totals.rpm).toFixed(2);
+                    document.getElementById('kpi-impressions').innerText = Number(data.totals.impressions).toLocaleString();
+                    document.getElementById('kpi-clicks').innerText = Number(data.totals.clicks).toLocaleString();
+                    document.getElementById('kpi-ctr').innerText = `(${data.totals.ctr}%)`;
+
+                    renderCharts(data.daily);
+                    renderCountries(data.countries);
+                    renderDailyTable(data.daily);
                 } catch (e) {
-                    console.error("Failed to load dashboard:", e);
+                    console.error("Failed to load stats:", e);
                 }
             }
 
-            function renderDashboard(data) {
-                const t = data.totals;
-                document.getElementById('stat-earnings').innerText = t.earnings.toFixed(2) + ' MAD';
-                document.getElementById('stat-views').innerText = t.views.toLocaleString();
-                document.getElementById('stat-rpm').innerText = t.rpm.toFixed(2) + ' MAD';
-                document.getElementById('stat-impressions').innerText = t.impressions.toLocaleString();
-                document.getElementById('stat-clicks').innerText = t.clicks.toLocaleString();
-                document.getElementById('stat-ctr').innerText = `(${t.ctr}%)`;
+            function changeRange(range) {
+                loadStats(range);
+            }
 
-                rawDailyData = data.daily || [];
-                const labels = rawDailyData.map(d => d.date);
-                const earnings = rawDailyData.map(d => d.earnings);
-                const views = rawDailyData.map(d => d.pageviews);
-                const impressions = rawDailyData.map(d => d.impressions);
+            function renderCharts(dailyData) {
+                const labels = dailyData.map(d => d.date.slice(5));
+                const earnings = dailyData.map(d => d.earnings);
+                const views = dailyData.map(d => d.views);
+                const impressions = dailyData.map(d => d.impressions);
 
-                // 1. Earnings Chart (Always in MAD)
-                if (earningsChart) earningsChart.destroy();
-                const ctxE = document.getElementById('earningsChart').getContext('2d');
-                earningsChart = new Chart(ctxE, {
+                if (revenueChartInstance) revenueChartInstance.destroy();
+                const ctxRev = document.getElementById('revenueChart').getContext('2d');
+                revenueChartInstance = new Chart(ctxRev, {
                     type: 'line',
                     data: {
                         labels: labels,
@@ -1486,44 +1969,39 @@ async def dashboard_page(request: Request):
                             data: earnings,
                             borderColor: '#10b981',
                             backgroundColor: 'rgba(16, 185, 129, 0.1)',
-                            fill: true,
-                            tension: 0.3,
                             borderWidth: 2,
-                            pointRadius: labels.length > 15 ? 1 : 3
+                            fill: true,
+                            tension: 0.3
                         }]
                     },
                     options: {
                         responsive: true,
                         maintainAspectRatio: false,
-                        plugins: { 
-                            legend: { display: false },
-                            tooltip: { callbacks: { label: c => c.parsed.y.toFixed(2) + ' MAD' } }
-                        },
+                        plugins: { legend: { display: false } },
                         scales: {
-                            x: { grid: { color: 'rgba(51, 65, 85, 0.3)' }, ticks: { color: '#94a3b8', font: { size: 10 } } },
-                            y: { grid: { color: 'rgba(51, 65, 85, 0.3)' }, ticks: { color: '#94a3b8', callback: v => v + ' MAD' } }
+                            x: { grid: { color: 'rgba(51, 65, 85, 0.3)' }, ticks: { color: '#94a3b8' } },
+                            y: { grid: { color: 'rgba(51, 65, 85, 0.3)' }, ticks: { color: '#94a3b8' } }
                         }
                     }
                 });
 
-                // 2. Traffic Chart
-                if (trafficChart) trafficChart.destroy();
-                const ctxT = document.getElementById('trafficChart').getContext('2d');
-                trafficChart = new Chart(ctxT, {
+                if (trafficChartInstance) trafficChartInstance.destroy();
+                const ctxTr = document.getElementById('trafficChart').getContext('2d');
+                trafficChartInstance = new Chart(ctxTr, {
                     type: 'bar',
                     data: {
                         labels: labels,
                         datasets: [
                             {
-                                label: currentLang === 'ar' ? 'مشاهدات المقالات' : 'Pageviews',
+                                label: currentLang === 'ar' ? 'مشاهدات الصفحة' : 'Pageviews',
                                 data: views,
                                 backgroundColor: '#38bdf8',
                                 borderRadius: 4
                             },
                             {
-                                label: currentLang === 'ar' ? 'ظهور الإعلانات' : 'Impressions',
+                                label: currentLang === 'ar' ? 'مرات الظهور' : 'Impressions',
                                 data: impressions,
-                                backgroundColor: '#a855f7',
+                                backgroundColor: 'rgba(56, 189, 248, 0.3)',
                                 borderRadius: 4
                             }
                         ]
@@ -1531,155 +2009,293 @@ async def dashboard_page(request: Request):
                     options: {
                         responsive: true,
                         maintainAspectRatio: false,
-                        plugins: { legend: { position: 'top', labels: { color: '#94a3b8', boxWidth: 12 } } },
+                        plugins: { legend: { labels: { color: '#cbd5e1' } } },
                         scales: {
-                            x: { grid: { display: false }, ticks: { color: '#94a3b8', font: { size: 10 } } },
+                            x: { grid: { display: false }, ticks: { color: '#94a3b8' } },
                             y: { grid: { color: 'rgba(51, 65, 85, 0.3)' }, ticks: { color: '#94a3b8' } }
                         }
                     }
                 });
-
-                // 3. Platform Chart
-                if (platformChart) platformChart.destroy();
-                const ctxP = document.getElementById('platformChart').getContext('2d');
-                const plats = data.platforms || [];
-                const pLabels = plats.map(p => {
-                    if (currentLang === 'ar') return p.platform.replace('High-end mobile devices', 'الهواتف').replace('Desktop', 'الحواسيب').replace('Tablets', 'التابليت');
-                    return p.platform.replace('High-end mobile devices', 'Mobile').replace('Tablets', 'Tablet');
-                });
-                const pEarnings = plats.map(p => p.earnings);
-                platformChart = new Chart(ctxP, {
-                    type: 'doughnut',
-                    data: {
-                        labels: pLabels,
-                        datasets: [{
-                            data: pEarnings,
-                            backgroundColor: ['#10b981', '#38bdf8', '#f59e0b'],
-                            borderWidth: 0
-                        }]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        plugins: { 
-                            legend: { position: 'bottom', labels: { color: '#94a3b8', boxWidth: 10, font: { size: 11 } } },
-                            tooltip: { callbacks: { label: c => `${c.label}: ${c.parsed.toFixed(2)} MAD` } }
-                        }
-                    }
-                });
-
-                // Platform Cards
-                document.getElementById('platformCards').innerHTML = plats.map(p => {
-                    const shortName = currentLang === 'ar' 
-                        ? p.platform.replace('High-end mobile devices', 'الهواتف').replace('Desktop', 'الحواسيب').replace('Tablets', 'التابليت')
-                        : p.platform.replace('High-end mobile devices', 'Mobile').replace('Tablets', 'Tablet');
-                    return `
-                        <div class="bg-slate-800/50 p-2 rounded-xl">
-                            <div class="text-[10px] text-slate-400">${shortName}</div>
-                            <div class="text-sm font-bold text-white font-num">${p.earnings.toFixed(2)} MAD</div>
-                            <div class="text-[10px] text-slate-400 font-num">${p.pageviews} views</div>
-                        </div>
-                    `;
-                }).join('');
-
-                // Countries Table
-                const cTbody = document.getElementById('countryTableBody');
-                if (!data.countries || data.countries.length === 0) {
-                    cTbody.innerHTML = '<tr><td colspan="4" class="py-4 text-center text-slate-500">No data available</td></tr>';
-                } else {
-                    cTbody.innerHTML = data.countries.map(c => `
-                        <tr class="hover:bg-slate-800/30 transition">
-                            <td class="py-2.5 px-3 font-medium text-white">${c.country}</td>
-                            <td class="py-2.5 px-3 font-num ${currentLang === 'en' ? 'text-left' : 'text-left'}">${c.pageviews.toLocaleString()}</td>
-                            <td class="py-2.5 px-3 font-num ${currentLang === 'en' ? 'text-left' : 'text-left'}">${c.impressions.toLocaleString()}</td>
-                            <td class="py-2.5 px-3 font-bold text-emerald-400 font-num ${currentLang === 'en' ? 'text-left' : 'text-left'}">${c.earnings.toFixed(2)} MAD</td>
-                        </tr>
-                    `).join('');
-                }
-
-                // Daily Table
-                const dTbody = document.getElementById('dailyTableBody');
-                if (rawDailyData.length === 0) {
-                    dTbody.innerHTML = '<tr><td colspan="6" class="py-4 text-center text-slate-500">No daily data available</td></tr>';
-                } else {
-                    const sortedDaily = [...rawDailyData].reverse();
-                    dTbody.innerHTML = sortedDaily.map(d => `
-                        <tr class="hover:bg-slate-800/30 transition">
-                            <td class="py-2.5 px-4 font-sans text-slate-200">${d.date}</td>
-                            <td class="py-2.5 px-4 font-bold text-emerald-400 ${currentLang === 'en' ? 'text-left' : 'text-left'}">${d.earnings.toFixed(2)} MAD</td>
-                            <td class="py-2.5 px-4 ${currentLang === 'en' ? 'text-left' : 'text-left'}">${d.pageviews.toLocaleString()}</td>
-                            <td class="py-2.5 px-4 text-amber-400 ${currentLang === 'en' ? 'text-left' : 'text-left'}">${d.rpm.toFixed(2)} MAD</td>
-                            <td class="py-2.5 px-4 ${currentLang === 'en' ? 'text-left' : 'text-left'}">${d.impressions.toLocaleString()}</td>
-                            <td class="py-2.5 px-4 ${currentLang === 'en' ? 'text-left' : 'text-left'}">${d.clicks}</td>
-                        </tr>
-                    `).join('');
-                }
             }
 
-            function exportCSV() {
-                if (!rawDailyData.length) return;
-                let csv = "Date,Earnings_MAD,Pageviews,RPM_MAD,Impressions,Clicks\\n";
-                rawDailyData.forEach(d => {
-                    csv += `${d.date},${d.earnings},${d.pageviews},${d.rpm},${d.impressions},${d.clicks}\\n`;
+            function renderCountries(countries) {
+                const tbody = document.getElementById('countriesTableBody');
+                if (!countries || !countries.length) {
+                    tbody.innerHTML = '<tr><td colspan="3" class="py-4 text-center text-slate-500 text-xs">لا تتوفر بيانات</td></tr>';
+                    return;
+                }
+                tbody.innerHTML = countries.map(c => `
+                    <tr class="hover:bg-slate-800/40 transition">
+                        <td class="py-2.5 font-medium text-slate-200">${c.country}</td>
+                        <td class="py-2.5 text-slate-400">${c.views.toLocaleString()}</td>
+                        <td class="py-2.5 font-bold text-emerald-400">${c.earnings.toFixed(2)}</td>
+                    </tr>
+                `).join('');
+            }
+
+            let dailyDataCache = [];
+            function renderDailyTable(daily) {
+                dailyDataCache = daily;
+                const tbody = document.getElementById('dailyTableBody');
+                if (!daily || !daily.length) {
+                    tbody.innerHTML = '<tr><td colspan="6" class="py-4 text-center text-slate-500 text-xs">لا تتوفر بيانات</td></tr>';
+                    return;
+                }
+                const sorted = [...daily].reverse();
+                tbody.innerHTML = sorted.map(d => `
+                    <tr class="hover:bg-slate-800/40 transition">
+                        <td class="py-2.5 font-bold text-white">${d.date}</td>
+                        <td class="py-2.5 text-slate-300">${d.views.toLocaleString()}</td>
+                        <td class="py-2.5 text-amber-400 font-semibold">${d.rpm.toFixed(2)}</td>
+                        <td class="py-2.5 text-slate-400">${d.impressions.toLocaleString()}</td>
+                        <td class="py-2.5 text-slate-400">${d.clicks}</td>
+                        <td class="py-2.5 font-extrabold text-emerald-400">${d.earnings.toFixed(2)}</td>
+                    </tr>
+                `).join('');
+            }
+
+            function exportDailyCSV() {
+                if (!dailyDataCache.length) return;
+                let csv = "Date,Page Views,Page RPM (MAD),Impressions,Clicks,Earnings (MAD)\n";
+                dailyDataCache.forEach(d => {
+                    csv += `${d.date},${d.views},${d.rpm},${d.impressions},${d.clicks},${d.earnings}\n`;
                 });
-                const blob = new Blob([csv], { type: 'text/csv' });
-                const url = window.URL.createObjectURL(blob);
+                const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
-                a.setAttribute('href', url);
-                a.setAttribute('download', `make-food-adsense-MAD-${currentRange}.csv`);
+                a.href = url;
+                a.download = `makefood-adsense-${currentRange}.csv`;
                 a.click();
             }
 
-            // Recipes List
-            async function loadRecipesList() {
+            // ================= RECIPES FULL CRUD (LIST, READ, UPDATE, DELETE) =================
+            async function loadRecipesList(reset = false) {
+                if (reset) {
+                    currentOffset = 0;
+                    allRecipesData = [];
+                }
                 const search = document.getElementById('recipeSearchInput').value || '';
+                const category = document.getElementById('recipeCategoryFilter').value || 'all';
+
                 try {
-                    const res = await fetch(`/api/recipes?search=${encodeURIComponent(search)}&limit=60`);
+                    const res = await fetch(`/api/recipes?search=${encodeURIComponent(search)}&category=${encodeURIComponent(category)}&limit=${pageSize}&offset=${currentOffset}`);
                     const data = await res.json();
-                    allRecipesData = data.recipes || [];
+                    
+                    if (reset) {
+                        allRecipesData = data.recipes || [];
+                    } else {
+                        allRecipesData = allRecipesData.concat(data.recipes || []);
+                    }
+
                     document.getElementById('recipes-count-badge').innerText = `${data.total.toLocaleString()} recipes`;
-                    renderRecipesGrid(allRecipesData);
+
+                    // Populate categories dropdown if empty
+                    const catSelect = document.getElementById('recipeCategoryFilter');
+                    if (catSelect.options.length <= 1 && data.categories && data.categories.length) {
+                        data.categories.forEach(cat => {
+                            const opt = document.createElement('option');
+                            opt.value = cat;
+                            opt.innerText = cat;
+                            catSelect.appendChild(opt);
+                        });
+                    }
+
+                    renderRecipesGrid(allRecipesData, false);
+
+                    // Show/hide Load More
+                    const loadMoreContainer = document.getElementById('loadMoreContainer');
+                    if (data.has_more) {
+                        loadMoreContainer.classList.remove('hidden');
+                    } else {
+                        loadMoreContainer.classList.add('hidden');
+                    }
                 } catch (e) {
                     console.error("Failed to load recipes:", e);
                 }
             }
 
-            function renderRecipesGrid(recipes) {
-                const container = document.getElementById('recipesGrid');
-                if (!recipes.length) {
-                    container.innerHTML = '<div class="col-span-3 text-center py-12 text-slate-500">No recipes found matching your query.</div>';
-                    return;
-                }
-                container.innerHTML = recipes.map(r => `
-                    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex gap-4 hover:border-slate-700 transition">
-                        <img src="${r.image || 'https://images.unsplash.com/photo-1495521821757-a1efb6729352?auto=format&fit=crop&w=300&q=80'}" alt="${r.title}" class="w-24 h-24 rounded-xl object-cover border border-slate-800 flex-shrink-0">
-                        <div class="flex flex-col justify-between overflow-hidden w-full">
-                            <div>
-                                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                                    ${r.category}
-                                </span>
-                                <h3 class="text-sm font-bold text-white mt-1.5 truncate" title="${r.title}">${r.title}</h3>
-                                <p class="text-[11px] text-slate-400 mt-1 font-num">${r.prep_time || '15 min'} • ${r.servings || '4 servings'}</p>
-                            </div>
-                            <div class="flex items-center justify-between pt-2 border-t border-slate-800/80 mt-2">
-                                <span class="text-[10px] text-slate-500 font-num">${r.published_at ? r.published_at.slice(0, 10) : ''}</span>
-                                <a href="${r.url}" target="_blank" class="text-xs font-bold text-emerald-400 hover:text-emerald-300 flex items-center gap-1 font-num">
-                                    <span>${currentLang === 'ar' ? 'مشاهدة حية ↗' : 'View Live ↗'}</span>
-                                </a>
-                            </div>
-                        </div>
-                    </div>
-                `).join('');
+            function loadMoreRecipes() {
+                currentOffset += pageSize;
+                loadRecipesList(false);
+            }
+
+            function handleCategoryFilter() {
+                loadRecipesList(true);
             }
 
             let searchTimeout = null;
             function handleRecipeSearch() {
                 clearTimeout(searchTimeout);
                 searchTimeout = setTimeout(() => {
-                    loadRecipesList();
+                    loadRecipesList(true);
                 }, 300);
             }
 
+            function renderRecipesGrid(recipes, append = false) {
+                const container = document.getElementById('recipesGrid');
+                if (!recipes.length) {
+                    container.innerHTML = '<div class="col-span-3 text-center py-12 text-slate-500">No recipes found matching your query.</div>';
+                    return;
+                }
+                const t = dict[currentLang];
+                container.innerHTML = recipes.map(r => `
+                    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between hover:border-slate-700 transition shadow-lg group">
+                        <div class="flex gap-4">
+                            <img src="${r.image || 'https://images.unsplash.com/photo-1495521821757-a1efb6729352?auto=format&fit=crop&w=300&q=80'}" alt="${r.title}" class="w-20 h-20 rounded-xl object-cover border border-slate-800 flex-shrink-0">
+                            <div class="overflow-hidden w-full">
+                                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20 font-num">
+                                    ${r.category}
+                                </span>
+                                <h3 class="text-xs sm:text-sm font-bold text-white mt-1.5 truncate group-hover:text-emerald-400 transition" title="${r.title}">${r.title}</h3>
+                                <p class="text-[11px] text-slate-400 mt-1 font-num">${r.prep_time || '15 min'} • ${r.servings || '4 servings'}</p>
+                            </div>
+                        </div>
+
+                        <!-- Card Action Buttons (View, Edit, Delete) -->
+                        <div class="flex items-center justify-between pt-3 border-t border-slate-800/80 mt-3">
+                            <span class="text-[10px] text-slate-500 font-num">${r.published_at ? r.published_at.slice(0, 10) : ''}</span>
+                            
+                            <div class="flex items-center gap-1.5">
+                                <a href="${r.url}" target="_blank" class="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-emerald-400 hover:text-emerald-300 transition flex items-center gap-0.5 font-num" title="View live page">
+                                    <span>👁️</span> <span>${t.viewLive}</span>
+                                </a>
+                                <button onclick="openEditModal('${r.slug}')" class="px-2 py-1 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/20 text-[11px] font-bold text-blue-400 hover:text-blue-300 transition flex items-center gap-0.5" title="Edit recipe">
+                                    <span>✏️</span> <span>${t.editRecipe}</span>
+                                </button>
+                                <button onclick="confirmDeleteRecipe('${r.slug}', '${encodeURIComponent(r.title)}')" class="px-2 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 text-[11px] font-bold text-rose-400 hover:text-rose-300 transition flex items-center gap-0.5" title="Delete recipe">
+                                    <span>🗑️</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+            }
+
+            // Edit Recipe Modal
+            async function openEditModal(slug) {
+                const modal = document.getElementById('editRecipeModal');
+                modal.classList.remove('hidden');
+                modal.classList.add('flex');
+
+                document.getElementById('btnSaveEditRecipe').disabled = true;
+                document.getElementById('btnTextSaveEdit').innerText = 'Loading...';
+
+                try {
+                    const res = await fetch(`/api/recipes/get/${slug}`);
+                    const data = await res.json();
+                    if (!data.success) throw new Error(data.detail || "Failed to load recipe details");
+
+                    const r = data.recipe;
+                    document.getElementById('editOriginalSlug').value = r.original_slug;
+                    document.getElementById('editTitle').value = r.title;
+                    document.getElementById('editSlug').value = r.slug;
+                    document.getElementById('editCategory').value = r.category;
+                    document.getElementById('editAuthor').value = r.author;
+                    document.getElementById('editImage').value = r.featured_image;
+                    document.getElementById('editPrepTime').value = r.prep_time;
+                    document.getElementById('editCookTime').value = r.cook_time;
+                    document.getElementById('editServings').value = r.servings;
+                    document.getElementById('editDescription').value = r.description;
+                    document.getElementById('editIngredients').value = r.ingredients_raw;
+                    document.getElementById('editInstructions').value = r.instructions_raw;
+                    document.getElementById('editHtml').value = r.article_html;
+
+                    document.getElementById('btnSaveEditRecipe').disabled = false;
+                    document.getElementById('btnTextSaveEdit').innerText = dict[currentLang].btnSaveEdit;
+                } catch (e) {
+                    showToast(e.message, 'error');
+                    closeEditModal();
+                }
+            }
+
+            function closeEditModal() {
+                const modal = document.getElementById('editRecipeModal');
+                modal.classList.add('hidden');
+                modal.classList.remove('flex');
+            }
+
+            async function handleUpdateRecipe(e) {
+                e.preventDefault();
+                const btn = document.getElementById('btnSaveEditRecipe');
+                const btnText = document.getElementById('btnTextSaveEdit');
+                btn.disabled = true;
+                btnText.innerText = currentLang === 'ar' ? 'جاري الحفظ وإعادة البناء...' : 'Saving & Redeploying...';
+
+                const formData = new FormData();
+                formData.append('original_slug', document.getElementById('editOriginalSlug').value);
+                formData.append('title', document.getElementById('editTitle').value);
+                formData.append('slug', document.getElementById('editSlug').value);
+                formData.append('category', document.getElementById('editCategory').value);
+                formData.append('author', document.getElementById('editAuthor').value);
+                formData.append('featured_image', document.getElementById('editImage').value);
+                formData.append('prep_time', document.getElementById('editPrepTime').value);
+                formData.append('cook_time', document.getElementById('editCookTime').value);
+                formData.append('servings', document.getElementById('editServings').value);
+                formData.append('description', document.getElementById('editDescription').value);
+                formData.append('ingredients_raw', document.getElementById('editIngredients').value);
+                formData.append('instructions_raw', document.getElementById('editInstructions').value);
+                formData.append('article_html', document.getElementById('editHtml').value);
+
+                try {
+                    const res = await fetch('/api/recipes/update', { method: 'POST', body: formData });
+                    const data = await res.json();
+                    if (!data.success) throw new Error(data.error || "Update failed");
+
+                    showToast(data.message, 'success');
+                    closeEditModal();
+                    loadRecipesList(true);
+                } catch (err) {
+                    showToast(err.message, 'error');
+                } finally {
+                    btn.disabled = false;
+                    btnText.innerText = dict[currentLang].btnSaveEdit;
+                }
+            }
+
+            // Delete Recipe Modal
+            function confirmDeleteRecipe(slug, encodedTitle) {
+                pendingDeleteSlug = slug;
+                const title = decodeURIComponent(encodedTitle);
+                document.getElementById('deleteRecipeTargetTitle').innerText = title;
+                const modal = document.getElementById('deleteConfirmModal');
+                modal.classList.remove('hidden');
+                modal.classList.add('flex');
+            }
+
+            function closeDeleteModal() {
+                pendingDeleteSlug = null;
+                const modal = document.getElementById('deleteConfirmModal');
+                modal.classList.add('hidden');
+                modal.classList.remove('flex');
+            }
+
+            async function executeDeleteRecipe() {
+                if (!pendingDeleteSlug) return;
+                const btn = document.getElementById('btnConfirmDeleteAction');
+                const btnText = document.getElementById('btnTextConfirmDelete');
+                btn.disabled = true;
+                btnText.innerText = currentLang === 'ar' ? 'جاري الحذف...' : 'Deleting...';
+
+                const formData = new FormData();
+                formData.append('slug', pendingDeleteSlug);
+
+                try {
+                    const res = await fetch('/api/recipes/delete', { method: 'POST', body: formData });
+                    const data = await res.json();
+                    if (!data.success) throw new Error(data.error || "Delete failed");
+
+                    showToast(data.message, 'success');
+                    closeDeleteModal();
+                    loadRecipesList(true);
+                } catch (err) {
+                    showToast(err.message, 'error');
+                } finally {
+                    btn.disabled = false;
+                    btnText.innerText = dict[currentLang].btnConfirmDelete;
+                }
+            }
+
+            // Create Recipe Form Handlers
             function autoSlug() {
                 const title = document.getElementById('postTitle').value;
                 const slugInput = document.getElementById('postSlug');
@@ -1701,45 +2317,125 @@ async def dashboard_page(request: Request):
                 }
             }
 
-            // ================= AI STUDIO LOGIC =================
+            // AI Studio & Settings
             function setAiMode(mode) {
                 currentAiMode = mode;
+                const btnName = document.getElementById('aiModeBtnName');
+                const btnRewrite = document.getElementById('aiModeBtnRewrite');
+                const nameBox = document.getElementById('aiNameInputBox');
+                const rewriteBox = document.getElementById('aiRewriteInputBox');
+
                 if (mode === 'name') {
-                    document.getElementById('aiModeBtnName').className = "flex-1 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-300 font-bold transition";
-                    document.getElementById('aiModeBtnRewrite').className = "flex-1 py-1.5 rounded-lg text-slate-400 hover:text-white transition";
-                    document.getElementById('aiNameInputBox').classList.remove('hidden');
-                    document.getElementById('aiRewriteInputBox').classList.add('hidden');
+                    btnName.className = "flex-1 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-300 font-bold transition";
+                    btnRewrite.className = "flex-1 py-1.5 rounded-lg text-slate-400 hover:text-white transition";
+                    nameBox.classList.remove('hidden');
+                    rewriteBox.classList.add('hidden');
                 } else {
-                    document.getElementById('aiModeBtnRewrite').className = "flex-1 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-300 font-bold transition";
-                    document.getElementById('aiModeBtnName').className = "flex-1 py-1.5 rounded-lg text-slate-400 hover:text-white transition";
-                    document.getElementById('aiRewriteInputBox').classList.remove('hidden');
-                    document.getElementById('aiNameInputBox').classList.add('hidden');
+                    btnRewrite.className = "flex-1 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-300 font-bold transition";
+                    btnName.className = "flex-1 py-1.5 rounded-lg text-slate-400 hover:text-white transition";
+                    rewriteBox.classList.remove('hidden');
+                    nameBox.classList.add('hidden');
+                }
+            }
+
+            function getActiveProvider() {
+                const radios = document.getElementsByName('ai_provider');
+                for (const r of radios) {
+                    if (r.checked) return r.value;
+                }
+                return 'google';
+            }
+
+            function handleProviderChange() {
+                const provider = getActiveProvider();
+                const key = localStorage.getItem(`ai_key_${provider}`) || '';
+                document.getElementById('userApiKey').value = key;
+                updateActiveModelBadge();
+            }
+
+            function saveApiKey() {
+                const provider = getActiveProvider();
+                const key = document.getElementById('userApiKey').value.trim();
+                localStorage.setItem(`ai_key_${provider}`, key);
+                showToast(currentLang === 'ar' ? 'تم حفظ المفتاح بأمان في المتصفح!' : 'API Key saved securely in browser!');
+                updateActiveModelBadge();
+            }
+
+            function saveActiveModel() {
+                const model = document.getElementById('selectedAiModel').value;
+                localStorage.setItem('active_ai_model', model);
+                updateActiveModelBadge();
+            }
+
+            function updateActiveModelBadge() {
+                const provider = getActiveProvider();
+                const model = localStorage.getItem('active_ai_model') || (provider === 'google' ? 'gemini-1.5-flash' : 'openai/gpt-4o');
+                const badge = document.getElementById('activeAiModelBadge');
+                badge.innerText = `${provider.toUpperCase()}: ${model.split('/').pop()}`;
+            }
+
+            async function fetchAvailableModels() {
+                const provider = getActiveProvider();
+                const apiKey = document.getElementById('userApiKey').value.trim() || localStorage.getItem(`ai_key_${provider}`);
+                if (!apiKey) {
+                    showToast(currentLang === 'ar' ? 'يرجى إدخال مفتاح الـ API أولاً' : 'Please enter an API Key first', 'error');
+                    return;
+                }
+
+                const btn = document.getElementById('btnFetchModels');
+                const btnText = document.getElementById('btnTextFetchModels');
+                btn.disabled = true;
+                btnText.innerText = currentLang === 'ar' ? 'جاري جلب الموديلات...' : 'Fetching models...';
+
+                try {
+                    const res = await fetch('/api/ai/models', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ provider: provider, api_key: apiKey })
+                    });
+                    const data = await res.json();
+                    if (!data.success) throw new Error(data.error || "Failed to fetch models");
+
+                    const select = document.getElementById('selectedAiModel');
+                    select.innerHTML = '';
+                    data.models.forEach(m => {
+                        const opt = document.createElement('option');
+                        opt.value = m.id;
+                        opt.innerText = `${m.name} (${m.id})`;
+                        select.appendChild(opt);
+                    });
+
+                    saveActiveModel();
+                    showToast(currentLang === 'ar' ? `تم جلب ${data.models.length} موديل متوفر بنجاح!` : `Successfully fetched ${data.models.length} models!`);
+                } catch (e) {
+                    showToast(e.message, 'error');
+                } finally {
+                    btn.disabled = false;
+                    btnText.innerText = currentLang === 'ar' ? 'جلب الموديلات المتوفرة (Fetch Models)' : 'Fetch Models';
                 }
             }
 
             async function triggerAiGeneration() {
-                const provider = localStorage.getItem('ai_provider') || 'google';
-                const apiKey = localStorage.getItem('ai_api_key') || '';
-                const model = localStorage.getItem('ai_model') || (provider === 'google' ? 'gemini-2.5-flash' : 'openai/gpt-4o-mini');
-
+                const provider = getActiveProvider();
+                const apiKey = document.getElementById('userApiKey').value.trim() || localStorage.getItem(`ai_key_${provider}`);
                 if (!apiKey) {
-                    alert(currentLang === 'ar' ? 'يرجى إدخال وحفظ مفتاح الـ API في تبويب (الإعدادات) أولاً!' : 'Please enter and save your API Key in the Settings tab first!');
+                    showToast(currentLang === 'ar' ? 'يرجى ضبط مفتاح الـ API في تبويب الإعدادات أولاً' : 'Please configure your API Key in Settings first', 'error');
                     switchTab('settings');
                     return;
                 }
 
-                const inputVal = currentAiMode === 'name' 
-                    ? document.getElementById('aiRecipeName').value.trim() 
-                    : document.getElementById('aiSourceContent').value.trim();
+                const model = document.getElementById('selectedAiModel').value || (provider === 'google' ? 'gemini-1.5-flash' : 'openai/gpt-4o');
+                const inputText = currentAiMode === 'name' ? document.getElementById('aiRecipeName').value.trim() : document.getElementById('aiSourceContent').value.trim();
 
-                if (!inputVal) {
-                    alert(currentLang === 'ar' ? 'يرجى كتابة اسم الوصفة أو وضع نص المقال أولاً!' : 'Please provide recipe name or source text first!');
+                if (!inputText) {
+                    showToast(currentLang === 'ar' ? 'يرجى إدخال اسم الوصفة أو النص الملهم أولاً' : 'Please enter a recipe title or inspiration text first', 'error');
                     return;
                 }
 
                 const btn = document.getElementById('btnGenerateAi');
+                const btnText = document.getElementById('btnTextGenerateAi');
                 btn.disabled = true;
-                btn.innerHTML = `<span>⏳</span> <span>${currentLang === 'ar' ? 'جاري التوليد بالذكاء الاصطناعي...' : 'Generating with AI...'}</span>`;
+                btnText.innerText = currentLang === 'ar' ? 'جاري الكتابة بالذكاء الاصطناعي... ⏳' : 'Generating with AI... ⏳';
 
                 try {
                     const res = await fetch('/api/ai/generate', {
@@ -1750,192 +2446,85 @@ async def dashboard_page(request: Request):
                             api_key: apiKey,
                             model: model,
                             mode: currentAiMode,
-                            recipe_input: inputVal,
-                            category: document.getElementById('postCategory').value
+                            input_text: inputText
                         })
                     });
                     const data = await res.json();
-                    if (data.success && data.recipe) {
-                        const r = data.recipe;
-                        document.getElementById('postTitle').value = r.title || '';
-                        document.getElementById('postSlug').value = r.slug || '';
-                        if (r.category) document.getElementById('postCategory').value = r.category;
-                        document.getElementById('postPrepTime').value = r.prep_time || 15;
-                        document.getElementById('postCookTime').value = r.cook_time || 25;
-                        document.getElementById('postServings').value = r.servings || 4;
-                        document.getElementById('postDescription').value = r.description || '';
-                        if (r.featured_image) {
-                            document.getElementById('postImage').value = r.featured_image;
-                            previewImage();
-                        }
-                        if (Array.isArray(r.ingredients)) {
-                            document.getElementById('postIngredients').value = r.ingredients.join('\\n');
-                        }
-                        if (Array.isArray(r.instructions)) {
-                            document.getElementById('postInstructions').value = r.instructions.join('\\n');
-                        }
-                        document.getElementById('postArticleHtml').value = r.article_html || '';
+                    if (!data.success) throw new Error(data.error || "Generation failed");
 
-                        // Scroll down to form
-                        document.getElementById('createRecipeForm').scrollIntoView({ behavior: 'smooth' });
-                    } else {
-                        alert('Error: ' + (data.error || 'Failed to generate recipe'));
+                    const rec = data.recipe;
+                    document.getElementById('postTitle').value = rec.title || '';
+                    document.getElementById('postSlug').value = rec.slug || '';
+                    if (rec.category) document.getElementById('postCategory').value = rec.category;
+                    if (rec.prep_time) document.getElementById('postPrepTime').value = rec.prep_time;
+                    if (rec.cook_time) document.getElementById('postCookTime').value = rec.cook_time;
+                    if (rec.servings) document.getElementById('postServings').value = rec.servings;
+                    if (rec.description) document.getElementById('postDescription').value = rec.description;
+
+                    if (rec.ingredients && Array.isArray(rec.ingredients)) {
+                        document.getElementById('postIngredients').value = rec.ingredients.join('\n');
                     }
+                    if (rec.instructions && Array.isArray(rec.instructions)) {
+                        document.getElementById('postInstructions').value = rec.instructions.join('\n');
+                    }
+                    if (rec.article_html) {
+                        document.getElementById('postHtml').value = rec.article_html;
+                    }
+
+                    showToast(currentLang === 'ar' ? 'تم توليد المقال والوصفة بنجاح!' : 'Recipe generated successfully!');
                 } catch (e) {
-                    alert('Request error: ' + e);
+                    showToast(e.message, 'error');
                 } finally {
                     btn.disabled = false;
-                    btn.innerHTML = `<span>✨</span> <span>${dict[currentLang].btnGenerateAi}</span>`;
+                    btnText.innerText = currentLang === 'ar' ? 'توليد الوصفة بالذكاء الاصطناعي' : 'Generate with AI';
                 }
-            }
-
-            // ================= SETTINGS LOGIC =================
-            function onProviderChange() {
-                const provider = document.querySelector('input[name="aiProvider"]:checked').value;
-                const select = document.getElementById('selectModel');
-                if (provider === 'google') {
-                    select.innerHTML = `
-                        <option value="gemini-2.5-flash">Gemini 2.5 Flash (Recommended)</option>
-                        <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
-                        <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
-                    `;
-                } else {
-                    select.innerHTML = `
-                        <option value="openai/gpt-4o-mini">GPT-4o Mini (Fast & Cheap)</option>
-                        <option value="anthropic/claude-3.5-sonnet">Claude 3.5 Sonnet</option>
-                        <option value="deepseek/deepseek-chat">DeepSeek Chat V3</option>
-                        <option value="meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B</option>
-                    `;
-                }
-            }
-
-            function toggleApiKeyVisibility() {
-                const inp = document.getElementById('inputApiKey');
-                inp.type = inp.type === 'password' ? 'text' : 'password';
-            }
-
-            async function fetchModelsFromApi() {
-                const provider = document.querySelector('input[name="aiProvider"]:checked').value;
-                const apiKey = document.getElementById('inputApiKey').value.trim();
-                if (!apiKey) {
-                    alert(currentLang === 'ar' ? 'يرجى إدخال مفتاح الـ API أولاً لجلب النماذج!' : 'Please enter API Key first to fetch models!');
-                    return;
-                }
-
-                const btn = document.getElementById('btnFetchModels');
-                btn.disabled = true;
-                btn.innerHTML = `<span>⏳ Fetching...</span>`;
-
-                try {
-                    const res = await fetch('/api/ai/models', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ provider: provider, api_key: apiKey })
-                    });
-                    const data = await res.json();
-                    if (data.success && data.models && data.models.length > 0) {
-                        const select = document.getElementById('selectModel');
-                        select.innerHTML = data.models.map(m => `<option value="${m.id}">${m.name}</option>`).join('');
-                        alert(currentLang === 'ar' ? `تم جلب ${data.models.length} نموذج متاح بنجاح!` : `Successfully fetched ${data.models.length} available models!`);
-                    } else {
-                        alert('Could not fetch models: ' + (data.error || 'Unknown error'));
-                    }
-                } catch (e) {
-                    alert('Connection error: ' + e);
-                } finally {
-                    btn.disabled = false;
-                    btn.innerHTML = `<span>🔄</span> <span>${dict[currentLang].btnFetch}</span>`;
-                }
-            }
-
-            function saveAiSettings() {
-                const provider = document.querySelector('input[name="aiProvider"]:checked').value;
-                const apiKey = document.getElementById('inputApiKey').value.trim();
-                const model = document.getElementById('selectModel').value;
-
-                localStorage.setItem('ai_provider', provider);
-                if (apiKey) localStorage.setItem('ai_api_key', apiKey);
-                localStorage.setItem('ai_model', model);
-
-                document.getElementById('activeAiModelBadge').innerText = `${provider.toUpperCase()}: ${model}`;
-                const msg = document.getElementById('saveStatusMsg');
-                msg.innerText = currentLang === 'ar' ? '✓ تم حفظ الإعدادات بنجاح!' : '✓ Settings saved successfully!';
-                setTimeout(() => { msg.innerText = ''; }, 3000);
-            }
-
-            function loadAiSettings() {
-                const provider = localStorage.getItem('ai_provider') || 'google';
-                const apiKey = localStorage.getItem('ai_api_key') || '';
-                const model = localStorage.getItem('ai_model') || (provider === 'google' ? 'gemini-2.5-flash' : 'openai/gpt-4o-mini');
-
-                const rad = document.querySelector(`input[name="aiProvider"][value="${provider}"]`);
-                if (rad) rad.checked = true;
-                onProviderChange();
-
-                if (apiKey) document.getElementById('inputApiKey').value = apiKey;
-                const sel = document.getElementById('selectModel');
-                if (sel) {
-                    let opt = sel.querySelector(`option[value="${model}"]`);
-                    if (!opt) {
-                        const newOpt = document.createElement('option');
-                        newOpt.value = model;
-                        newOpt.innerText = model;
-                        sel.appendChild(newOpt);
-                    }
-                    sel.value = model;
-                }
-                document.getElementById('activeAiModelBadge').innerText = `${provider.toUpperCase()}: ${model}`;
             }
 
             async function handleCreateRecipe(e) {
                 e.preventDefault();
-                const btn = document.getElementById('btnPublish');
+                const btn = document.getElementById('btnPublishRecipe');
+                const btnText = document.getElementById('btnTextPublish');
                 btn.disabled = true;
-                btn.innerHTML = `<span>⏳</span> <span>${currentLang === 'ar' ? 'جاري النشر وتحديث make-food.com...' : 'Publishing & rebuilding make-food.com...'}</span>`;
+                btnText.innerText = currentLang === 'ar' ? 'جاري النشر وبناء الموقع... ⏳' : 'Publishing & Deploying... ⏳';
 
                 const formData = new FormData();
                 formData.append('title', document.getElementById('postTitle').value);
                 formData.append('slug', document.getElementById('postSlug').value);
                 formData.append('category', document.getElementById('postCategory').value);
                 formData.append('author', document.getElementById('postAuthor').value);
-                formData.append('description', document.getElementById('postDescription').value);
                 formData.append('featured_image', document.getElementById('postImage').value);
                 formData.append('prep_time', document.getElementById('postPrepTime').value);
                 formData.append('cook_time', document.getElementById('postCookTime').value);
                 formData.append('servings', document.getElementById('postServings').value);
+                formData.append('description', document.getElementById('postDescription').value);
                 formData.append('ingredients_raw', document.getElementById('postIngredients').value);
                 formData.append('instructions_raw', document.getElementById('postInstructions').value);
-                formData.append('article_html', document.getElementById('postArticleHtml').value);
+                formData.append('article_html', document.getElementById('postHtml').value);
 
                 try {
                     const res = await fetch('/api/recipes/create', { method: 'POST', body: formData });
-                    const result = await res.json();
-                    if (result.success) {
-                        alert(`🎉 ${result.message}\\n\\nLive URL:\\n${result.live_url}`);
-                        document.getElementById('createRecipeForm').reset();
-                        document.getElementById('imagePreviewBox').classList.add('hidden');
-                        switchTab('recipes');
-                        loadRecipesList();
-                    } else {
-                        alert('Publication error: ' + (result.error || 'Unknown error'));
-                    }
+                    const data = await res.json();
+                    if (!data.success) throw new Error(data.error || "Publication failed");
+
+                    showToast(data.message, 'success');
+                    document.getElementById('createRecipeForm').reset();
+                    switchTab('recipes');
+                    loadRecipesList(true);
                 } catch (err) {
-                    alert('Server error: ' + err);
+                    showToast(err.message, 'error');
                 } finally {
                     btn.disabled = false;
-                    btn.innerHTML = `<span>🚀</span> <span>${dict[currentLang].btnPublish}</span>`;
+                    btnText.innerText = currentLang === 'ar' ? 'نشر الوصفة مباشرة على make-food.com' : 'Publish to make-food.com';
                 }
             }
 
-            // Init
-            applyLanguage(currentLang);
-            loadDashboardData();
-            loadAiSettings();
+            // Initialization on page load
+            window.addEventListener('DOMContentLoaded', () => {
+                applyLanguage(currentLang);
+                loadStats('last30');
+                handleProviderChange();
+            });
         </script>
     </body>
     </html>
-    """
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    """)
