@@ -206,7 +206,7 @@ async def get_stats(request: Request, range: str = "last30"):
         "yesterday": "YESTERDAY",
         "last7": "LAST_7_DAYS",
         "last30": "LAST_30_DAYS",
-        "month": "THIS_MONTH"
+        "month": "MONTH_TO_DATE"
     }
     date_range = range_map.get(range, "LAST_30_DAYS")
     
@@ -218,6 +218,7 @@ async def get_stats(request: Request, range: str = "last30"):
         ("metrics", "IMPRESSIONS"),
         ("metrics", "CLICKS"),
         ("dimensions", "DATE"),
+        ("filters", f"DOMAIN_NAME=={CONFIG['TARGET_DOMAIN']}"),
         ("reportingTimeZone", "ACCOUNT_TIME_ZONE")
     ]
     query_string = urllib.parse.urlencode(daily_params)
@@ -278,6 +279,7 @@ async def get_stats(request: Request, range: str = "last30"):
         ("metrics", "PAGE_VIEWS"),
         ("metrics", "ESTIMATED_EARNINGS"),
         ("dimensions", "COUNTRY_NAME"),
+        ("filters", f"DOMAIN_NAME=={CONFIG['TARGET_DOMAIN']}"),
         ("reportingTimeZone", "ACCOUNT_TIME_ZONE")
     ]
     query_country = urllib.parse.urlencode(country_params)
@@ -306,6 +308,7 @@ async def get_stats(request: Request, range: str = "last30"):
         ("dateRange", date_range),
         ("metrics", "PAGE_VIEWS"),
         ("dimensions", "PLATFORM_TYPE_NAME"),
+        ("filters", f"DOMAIN_NAME=={CONFIG['TARGET_DOMAIN']}"),
         ("reportingTimeZone", "ACCOUNT_TIME_ZONE")
     ]
     query_plat = urllib.parse.urlencode(plat_params)
