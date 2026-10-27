@@ -8,8 +8,12 @@ import urllib.parse
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
-from fastapi import FastAPI, Request, Response, Form, HTTPException, status
+from fastapi import FastAPI, Request, Response, Form, HTTPException, status, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+import uuid
+import shutil
+import base64
 
 # Configuration
 CONFIG = {
@@ -31,6 +35,9 @@ CONFIG = {
 app = FastAPI(title="Make-Food.com — Portal")
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
+UPLOADS_DIR = os.path.join(os.path.dirname(__file__), "uploads")
+os.makedirs(UPLOADS_DIR, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
 
 def get_template(name: str) -> str:
     path = os.path.join(TEMPLATES_DIR, name)
@@ -193,6 +200,57 @@ async def logout():
     response = RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
     response.delete_cookie("session_token")
     return response
+
+
+@app.post("/api/upload-image")
+async def upload_image(request: Request, image: UploadFile = File(...)):
+    if not is_authenticated(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+        
+    ext = os.path.splitext(image.filename)[1].lower() if image.filename else ".jpg"
+    if ext not in [".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif"]:
+        raise HTTPException(status_code=400, detail="Invalid image extension. Allowed: jpg, jpeg, png, webp, gif, avif")
+        
+    safe_name = f"{uuid.uuid4().hex[:12]}{ext}"
+    file_path = os.path.join(UPLOADS_DIR, safe_name)
+    
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(image.file, buffer)
+        
+    final_url = f"https://partner.make-food.com/uploads/{safe_name}"
+    
+    # Also push image to GitHub make-food.com public/uploads/ if token configured
+    if CONFIG.get("GITHUB_TOKEN") and CONFIG.get("REPO_NAME"):
+        try:
+            with open(file_path, "rb") as f_img:
+                img_b64 = base64.b64encode(f_img.read()).decode("utf-8")
+            gh_h = {
+                "Authorization": f"token {CONFIG['GITHUB_TOKEN']}",
+                "Accept": "application/vnd.github.v3+json",
+                "Content-Type": "application/json"
+            }
+            gh_payload = {
+                "message": f"upload: add recipe image {safe_name}",
+                "content": img_b64,
+                "branch": "main"
+            }
+            req_gh = urllib.request.Request(
+                f"https://api.github.com/repos/{CONFIG['REPO_NAME']}/contents/public/uploads/{safe_name}",
+                data=json.dumps(gh_payload).encode("utf-8"),
+                headers=gh_h,
+                method="PUT"
+            )
+            with urllib.request.urlopen(req_gh):
+                pass
+            final_url = f"https://make-food.com/uploads/{safe_name}"
+        except Exception as e:
+            print("Note: GitHub direct content push skipped, fallback to partner upload URL:", e)
+
+    return {
+        "success": True,
+        "filename": safe_name,
+        "url": final_url
+    }
 
 # ================= STATS API =================
 @app.get("/api/stats")

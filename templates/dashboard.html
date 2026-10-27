@@ -309,12 +309,25 @@
                 </div>
             </div>
 
-            <!-- ================= TAB 3: CREATE NEW POST (WITH AI ASSISTANT) ================= -->
+            <!-- ================= TAB 3: CREATE NEW POST (MANUAL OR AI) ================= -->
             <div id="tab-create" class="hidden space-y-6">
+                
+                <!-- Creation Type Selector: Manual vs AI Studio -->
+                <div class="flex items-center justify-center p-1.5 bg-slate-900/90 backdrop-blur-md border border-slate-800 rounded-2xl max-w-lg mx-auto shadow-xl">
+                    <button type="button" onclick="setCreationType('manual')" id="btnCreateTypeManual"
+                        class="flex-1 py-3 px-4 rounded-xl text-xs sm:text-sm font-bold transition flex items-center justify-center gap-2 bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 cursor-pointer">
+                        <span>✍️</span> <span id="labelManualTab">إنشاء يدوي (Manual)</span>
+                    </button>
+                    <button type="button" onclick="setCreationType('ai')" id="btnCreateTypeAi"
+                        class="flex-1 py-3 px-4 rounded-xl text-xs sm:text-sm font-semibold transition flex items-center justify-center gap-2 text-slate-400 hover:text-white cursor-pointer">
+                        <span>✨</span> <span id="labelAiTab">بالمساعد الذكي (AI Studio)</span>
+                    </button>
+                </div>
+
                 <div class="bg-slate-900 border border-slate-800/80 rounded-2xl p-6 sm:p-8 max-w-4xl mx-auto space-y-8">
                     
-                    <!-- AI Generation Studio Box -->
-                    <div class="bg-gradient-to-r from-emerald-950/40 via-slate-900 to-amber-950/40 border border-emerald-500/30 rounded-2xl p-6 relative overflow-hidden">
+                    <!-- AI Generation Studio Box (Visible only in AI mode) -->
+                    <div id="aiStudioBox" class="hidden bg-gradient-to-r from-emerald-950/40 via-slate-900 to-amber-950/40 border border-emerald-500/30 rounded-2xl p-6 relative overflow-hidden">
                         <div class="flex items-center justify-between mb-4">
                             <div class="flex items-center gap-2">
                                 <span class="text-2xl">⚡</span>
@@ -413,16 +426,40 @@
                                     class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 text-left font-num">
                             </div>
                             <div>
-                                <label id="lblPostImage" class="block text-xs font-bold text-slate-300 mb-2">رابط الصورة البارزة (Image URL)</label>
-                                <input type="url" id="postImage" onchange="previewImage()" dir="ltr"
-                                    placeholder="https://images.unsplash.com/photo-..."
-                                    class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 text-left font-num">
+                                <label id="lblPostImage" class="block text-xs font-bold text-slate-300 mb-2">رابط أو رفع الصورة البارزة (Image Upload / URL)</label>
+                                <div class="flex gap-2">
+                                    <input type="url" id="postImage" onchange="previewImage()" dir="ltr"
+                                        placeholder="https://... أو ارفع صورة مباشرة ⬅️"
+                                        class="flex-1 px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 text-left font-num">
+                                    
+                                    <label class="px-3.5 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 hover:border-emerald-500/50 rounded-xl text-xs font-bold text-slate-200 hover:text-white cursor-pointer transition flex items-center gap-1.5 whitespace-nowrap">
+                                        <span>📁</span> <span id="btnUploadImageText">رفع صورة</span>
+                                        <input type="file" accept="image/*" class="hidden" onchange="handleImageUpload(this, 'postImage', 'imagePreviewBox', 'imagePreviewEl', 'uploadStatusCreate')">
+                                    </label>
+                                </div>
+                                <div id="uploadStatusCreate" class="text-[11px] text-emerald-400 mt-1 hidden"></div>
+                            </div>
+                        </div>
+
+                        <!-- Drag & Drop Upload & Preview Zone -->
+                        <div class="border-2 border-dashed border-slate-700/80 hover:border-emerald-500/60 rounded-2xl p-5 text-center transition bg-slate-800/20 relative group">
+                            <input type="file" accept="image/*" class="absolute inset-0 opacity-0 cursor-pointer w-full h-full z-10"
+                                onchange="handleImageUpload(this, 'postImage', 'imagePreviewBox', 'imagePreviewEl', 'uploadStatusCreate')">
+                            <div class="space-y-1 pointer-events-none">
+                                <span class="text-3xl">📸</span>
+                                <p id="dropzoneMainText" class="text-xs font-bold text-slate-300 group-hover:text-emerald-300 transition">
+                                    اسحب وأفلت صورة الوصفة هنا، أو انقر لاختيارها من جهازك (Drag & Drop)
+                                </p>
+                                <p id="dropzoneSubText" class="text-[11px] text-slate-500 font-num">JPG, PNG, WEBP, AVIF (Uploads directly to make-food.com)</p>
                             </div>
                         </div>
 
                         <!-- Image Preview Box -->
-                        <div id="imagePreviewBox" class="hidden">
-                            <img id="imagePreviewEl" src="" alt="Preview" class="w-full max-h-48 object-cover rounded-xl border border-slate-800">
+                        <div id="imagePreviewBox" class="hidden relative rounded-xl overflow-hidden border border-slate-800 max-h-56">
+                            <img id="imagePreviewEl" src="" alt="Preview" class="w-full h-56 object-cover">
+                            <button type="button" onclick="removeImagePreview('postImage', 'imagePreviewBox')" class="absolute top-2 right-2 p-1.5 rounded-lg bg-slate-900/80 hover:bg-rose-600 text-white text-xs font-bold backdrop-blur-md transition">
+                                ✕ إزالة الصورة
+                            </button>
                         </div>
 
                         <!-- Cooking Timers & Servings -->
@@ -628,10 +665,23 @@
                                 class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 font-num">
                         </div>
                         <div>
-                            <label class="block text-xs font-bold text-slate-300 mb-1">رابط الصورة (Image URL)</label>
-                            <input type="url" id="editImage" dir="ltr" onchange="previewEditImage()"
-                                class="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 font-num">
+                            <label class="block text-xs font-bold text-slate-300 mb-1">الصورة (رفع أو رابط URL)</label>
+                            <div class="flex gap-2">
+                                <input type="url" id="editImage" dir="ltr"
+                                    placeholder="https://..."
+                                    class="flex-1 px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 font-num">
+                                <label class="px-3.5 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl text-xs font-bold text-slate-200 cursor-pointer transition flex items-center gap-1">
+                                    <span>📁</span>
+                                    <input type="file" accept="image/*" class="hidden" onchange="handleImageUpload(this, 'editImage', 'editImagePreviewBox', 'editImagePreviewEl', 'uploadStatusEdit')">
+                                </label>
+                            </div>
+                            <div id="uploadStatusEdit" class="text-[11px] text-emerald-400 mt-1 hidden"></div>
                         </div>
+                    </div>
+
+                    <!-- Edit Modal Image Preview -->
+                    <div id="editImagePreviewBox" class="rounded-xl overflow-hidden border border-slate-800 max-h-40">
+                        <img id="editImagePreviewEl" src="" alt="Recipe preview" class="w-full h-40 object-cover">
                     </div>
 
                     <!-- Timers & Servings -->
@@ -732,6 +782,82 @@
             let trafficChartInstance = null;
             let currentAiMode = 'name';
             
+            
+            let currentCreationType = 'manual';
+
+            function setCreationType(type) {
+                currentCreationType = type;
+                const btnManual = document.getElementById('btnCreateTypeManual');
+                const btnAi = document.getElementById('btnCreateTypeAi');
+                const aiBox = document.getElementById('aiStudioBox');
+                const title = document.getElementById('formSectionTitle');
+                const sub = document.getElementById('formSectionSub');
+                const btnPublishText = document.getElementById('btnTextPublish');
+
+                if (type === 'manual') {
+                    btnManual.className = "flex-1 py-3 px-4 rounded-xl text-xs sm:text-sm font-bold transition flex items-center justify-center gap-2 bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 cursor-pointer";
+                    btnAi.className = "flex-1 py-3 px-4 rounded-xl text-xs sm:text-sm font-semibold transition flex items-center justify-center gap-2 text-slate-400 hover:text-white cursor-pointer";
+                    aiBox.classList.add('hidden');
+                    title.innerText = currentLang === 'ar' ? '✍️ إنشاء مقال ووصفة يدوياً (Manual Mode)' : '✍️ Manual Recipe & Article Creation';
+                    sub.innerText = currentLang === 'ar' ? 'اكتب بيانات ومقادير الوصفة وارفع الصور بحرية تامة' : 'Write recipe details, ingredients, steps, and upload photos';
+                    btnPublishText.innerText = currentLang === 'ar' ? 'نشر المقال اليدوي على make-food.com' : 'Publish Manual Recipe to make-food.com';
+                } else {
+                    btnAi.className = "flex-1 py-3 px-4 rounded-xl text-xs sm:text-sm font-bold transition flex items-center justify-center gap-2 bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 cursor-pointer";
+                    btnManual.className = "flex-1 py-3 px-4 rounded-xl text-xs sm:text-sm font-semibold transition flex items-center justify-center gap-2 text-slate-400 hover:text-white cursor-pointer";
+                    aiBox.classList.remove('hidden');
+                    title.innerText = currentLang === 'ar' ? '✨ تفاصيل الوصفة المولدة بالذكاء الاصطناعي' : '✨ AI-Generated Recipe Details';
+                    sub.innerText = currentLang === 'ar' ? 'راجع الوصفة والمقادير المولدة، ارفع صورة طبقك ثم انشر' : 'Review generated recipe, upload dish photo, then publish';
+                    btnPublishText.innerText = currentLang === 'ar' ? 'نشر الوصفة بالذكاء الاصطناعي على make-food.com' : 'Publish AI Recipe to make-food.com';
+                }
+            }
+
+            async function handleImageUpload(inputEl, targetUrlId, previewBoxId, previewImgId, statusId) {
+                const file = inputEl.files && inputEl.files[0];
+                if (!file) return;
+
+                const statusEl = document.getElementById(statusId);
+                if (statusEl) {
+                    statusEl.classList.remove('hidden');
+                    statusEl.innerText = currentLang === 'ar' ? '⏳ جاري رفع الصورة إلى السيرفر...' : '⏳ Uploading image to server...';
+                }
+
+                const formData = new FormData();
+                formData.append('image', file);
+
+                try {
+                    const res = await fetch('/api/upload-image', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    const data = await res.json();
+                    if (!data.success) throw new Error(data.detail || data.error || 'Upload failed');
+
+                    // Set URL input
+                    const urlInput = document.getElementById(targetUrlId);
+                    if (urlInput) urlInput.value = data.url;
+
+                    // Update preview
+                    const previewBox = document.getElementById(previewBoxId);
+                    const previewImg = document.getElementById(previewImgId);
+                    if (previewImg) previewImg.src = data.url;
+                    if (previewBox) previewBox.classList.remove('hidden');
+
+                    if (statusEl) {
+                        statusEl.innerText = currentLang === 'ar' ? '✅ تم رفع الصورة بنجاح!' : '✅ Image uploaded successfully!';
+                        setTimeout(() => statusEl.classList.add('hidden'), 3500);
+                    }
+                    showToast(currentLang === 'ar' ? 'تم رفع الصورة بنجاح!' : 'Image uploaded successfully!');
+                } catch (e) {
+                    if (statusEl) statusEl.innerText = `❌ ${e.message}`;
+                    showToast(e.message, 'error');
+                }
+            }
+
+            function removeImagePreview(targetUrlId, previewBoxId) {
+                document.getElementById(targetUrlId).value = '';
+                document.getElementById(previewBoxId).classList.add('hidden');
+            }
+
             // Recipes list state
             let allRecipesData = [];
             let currentOffset = 0;
@@ -1227,6 +1353,11 @@
                     document.getElementById('editCategory').value = r.category;
                     document.getElementById('editAuthor').value = r.author;
                     document.getElementById('editImage').value = r.featured_image;
+                    const editPrev = document.getElementById('editImagePreviewEl');
+                    if (editPrev && r.featured_image) {
+                        editPrev.src = r.featured_image;
+                        document.getElementById('editImagePreviewBox').classList.remove('hidden');
+                    }
                     document.getElementById('editPrepTime').value = r.prep_time;
                     document.getElementById('editCookTime').value = r.cook_time;
                     document.getElementById('editServings').value = r.servings;
