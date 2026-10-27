@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl" id="htmlTag">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Make-Food.com — تسجيل دخول الشريك / Partner Login</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&family=Cairo:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Cairo', 'Plus Jakarta Sans', sans-serif; }
+        [dir="ltr"] body { font-family: 'Plus Jakarta Sans', sans-serif; }
+        .font-num { font-family: 'Plus Jakarta Sans', sans-serif; }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex items-center justify-center p-4">
+    <div class="w-full max-w-md">
+        <div class="bg-slate-900/90 backdrop-blur-xl border border-slate-800 rounded-3xl p-8 shadow-2xl relative overflow-hidden">
+            <div class="absolute -top-24 -right-24 w-48 h-48 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none"></div>
+            <div class="absolute -bottom-24 -left-24 w-48 h-48 bg-amber-500/10 rounded-full blur-3xl pointer-events-none"></div>
+
+            <div class="flex justify-end mb-4">
+                <button type="button" onclick="toggleLang()" id="loginLangBtn" class="px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 text-xs text-slate-300 hover:text-white flex items-center gap-1 cursor-pointer">
+                    🌐 <span id="loginLangText">English</span>
+                </button>
+            </div>
+
+            <div class="text-center mb-8 relative">
+                <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-tr from-amber-500 to-emerald-500 p-0.5 mb-4 shadow-lg shadow-emerald-500/20">
+                    <div class="w-full h-full bg-slate-900 rounded-[14px] flex items-center justify-center text-3xl">
+                        🍲
+                    </div>
+                </div>
+                <h1 class="text-2xl font-extrabold tracking-tight text-white font-['Plus_Jakarta_Sans']">Make-Food.com</h1>
+                <p id="loginSubtitle" class="text-sm text-slate-400 mt-1">بوابة إدارة الموقع، المقالات والأرباح</p>
+            </div>
+
+            <form method="POST" action="/login" class="space-y-5">
+                <div>
+                    <label id="lblUsername" class="block text-xs font-bold text-slate-300 mb-2">اسم المستخدم (Username)</label>
+                    <input type="text" name="username" required autocomplete="username" dir="ltr"
+                        placeholder="partner_makefood"
+                        class="w-full px-4 py-3 bg-slate-800/80 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition text-left">
+                </div>
+                <div>
+                    <label id="lblPassword" class="block text-xs font-bold text-slate-300 mb-2">كلمة المرور (Password)</label>
+                    <input type="password" name="password" required autocomplete="current-password" dir="ltr"
+                        placeholder="••••••••••••"
+                        class="w-full px-4 py-3 bg-slate-800/80 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition text-left">
+                </div>
+                <button type="submit" id="btnSubmitLogin"
+                    class="w-full py-3.5 px-4 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-bold rounded-xl shadow-lg shadow-emerald-500/25 transition duration-200 text-base cursor-pointer">
+                    تسجيل الدخول إلى المنصة
+                </button>
+            </form>
+
+            <div class="mt-6 pt-6 border-t border-slate-800/60 text-center">
+                <p class="text-xs text-slate-400 flex items-center justify-center gap-2">
+                    <span class="w-2 h-2 rounded-full bg-emerald-500 inline-block animate-pulse"></span>
+                    <span id="loginFooterText">مربوط بـ AdSense (بالدرهم المغربي MAD 🇲🇦)</span>
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentLang = localStorage.getItem('portal_lang') || 'ar';
+        function applyLang(lang) {
+            currentLang = lang;
+            localStorage.setItem('portal_lang', lang);
+            const html = document.getElementById('htmlTag');
+            if (lang === 'en') {
+                html.setAttribute('lang', 'en');
+                html.setAttribute('dir', 'ltr');
+                document.getElementById('loginLangText').innerText = 'العربية';
+                document.getElementById('loginSubtitle').innerText = 'Website Management, Content & Revenue Portal';
+                document.getElementById('lblUsername').innerText = 'Partner Username';
+                document.getElementById('lblPassword').innerText = 'Password';
+                document.getElementById('btnSubmitLogin').innerText = 'Sign In to Portal';
+                document.getElementById('loginFooterText').innerText = 'Connected to AdSense (Moroccan Dirham MAD 🇲🇦)';
+            } else {
+                html.setAttribute('lang', 'ar');
+                html.setAttribute('dir', 'rtl');
+                document.getElementById('loginLangText').innerText = 'English';
+                document.getElementById('loginSubtitle').innerText = 'بوابة إدارة الموقع، المقالات والأرباح';
+                document.getElementById('lblUsername').innerText = 'اسم المستخدم (Username)';
+                document.getElementById('lblPassword').innerText = 'كلمة المرور (Password)';
+                document.getElementById('btnSubmitLogin').innerText = 'تسجيل الدخول إلى المنصة';
+                document.getElementById('loginFooterText').innerText = 'مربوط بـ AdSense (بالدرهم المغربي MAD 🇲🇦)';
+            }
+        }
+        function toggleLang() {
+            applyLang(currentLang === 'ar' ? 'en' : 'ar');
+        }
+        applyLang(currentLang);
+    </script>
+</body>
+</html>
