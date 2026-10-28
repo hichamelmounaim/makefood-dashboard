@@ -388,17 +388,55 @@
                                     <span>✨</span> <span id="btnTextGenerateAi">توليد الوصفة بالذكاء الاصطناعي</span>
                                 </button>
                             </div>
+
+                            <!-- AI Live Progress Box -->
+                            <div id="aiProgressBox" class="hidden mt-3 p-3.5 bg-slate-900/95 border border-emerald-500/40 rounded-xl space-y-2.5 shadow-xl">
+                                <div class="flex items-center justify-between text-xs font-bold text-emerald-400">
+                                    <span id="aiProgressText" class="flex items-center gap-2">
+                                        <svg class="animate-spin h-3.5 w-3.5 text-emerald-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                        </svg>
+                                        <span>جاري الاتصال بمزود الذكاء الاصطناعي...</span>
+                                    </span>
+                                    <span id="aiTimerText" class="font-mono text-slate-400 font-num">0s</span>
+                                </div>
+                                <div class="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                                    <div id="aiProgressBar" class="bg-gradient-to-r from-emerald-500 to-teal-400 h-1.5 rounded-full transition-all duration-300" style="width: 20%"></div>
+                                </div>
+                                <p id="aiSubStatusText" class="text-[11px] text-slate-400">
+                                    راه القضية غادة وخدامة، كنجهزو ليك مقالة ووصفة احترافية وحصرية كاملة...
+                                </p>
+                            </div>
+
+                            <!-- AI Alert / Rate Limit Box with Countdown -->
+                            <div id="aiAlertBox" class="hidden mt-3 p-3.5 bg-amber-500/10 border border-amber-500/30 rounded-xl text-xs text-amber-300 flex items-start justify-between gap-3 shadow-lg">
+                                <div class="flex items-start gap-2.5">
+                                    <span class="text-base">⏳</span>
+                                    <div>
+                                        <div id="aiAlertTitle" class="font-bold">ضغط مؤقت على مزود الذكاء الاصطناعي (Rate Limit)</div>
+                                        <div id="aiAlertDesc" class="text-slate-300 text-[11px] mt-0.5">راه القضية غادة، المرجو الانتظار بضع ثوانٍ وسيعاد تفعيل الزر تلقائياً.</div>
+                                    </div>
+                                </div>
+                                <span id="aiAlertCountdown" class="font-mono font-bold bg-amber-500/20 text-amber-300 px-2.5 py-1 rounded-lg text-xs whitespace-nowrap font-num">5s</span>
+                            </div>
                         </div>
                     </div>
 
                     <!-- Main Recipe Form -->
                     <form id="createRecipeForm" onsubmit="handleCreateRecipe(event)" class="space-y-6">
-                        <div class="border-b border-slate-800 pb-4 flex items-center justify-between">
+                        <div class="border-b border-slate-800 pb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                             <div>
                                 <h3 id="formSectionTitle" class="text-base font-bold text-white">تفاصيل المقال والوصفة لـ make-food.com</h3>
                                 <p id="formSectionSub" class="text-xs text-slate-400 mt-1">راجع البيانات ثم اضغط نشر لتظهر فورياً على الموقع الحي</p>
                             </div>
-                            <span class="text-xs text-slate-500 font-num">make-food.com</span>
+                            <div class="flex items-center gap-2">
+                                <button type="button" onclick="resetRecipeFormWithConfirm()"
+                                    class="py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer">
+                                    <span>🔄</span> <span id="btnResetFormText">بدء وصفة جديدة (تفريغ)</span>
+                                </button>
+                                <span class="text-xs text-slate-500 font-num hidden sm:inline">make-food.com</span>
+                            </div>
                         </div>
 
                         <!-- Title & Slug -->
@@ -800,6 +838,45 @@
                         <span>🗑️</span> <span id="btnTextConfirmDelete">نعم، احذف المقال</span>
                     </button>
                 </div>
+            </div>
+        </div>
+
+        <!-- ================= POST-PUBLISH SUCCESS ACTION MODAL ================= -->
+        <div id="postPublishModal" class="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md hidden items-center justify-center p-4">
+            <div class="bg-slate-900 border border-emerald-500/40 rounded-2xl w-full max-w-md p-6 sm:p-7 shadow-2xl relative space-y-5 text-center transform transition-all animate-in fade-in zoom-in-95">
+                
+                <!-- Celebratory Badge -->
+                <div class="w-16 h-16 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-full flex items-center justify-center mx-auto text-3xl shadow-lg shadow-emerald-500/20 animate-bounce">
+                    🎉
+                </div>
+
+                <div>
+                    <h3 id="postPublishSuccessHeading" class="text-lg sm:text-xl font-bold text-white">تم نشر الوصفة بنجاح على make-food.com!</h3>
+                    <p id="publishedRecipeTitle" class="text-sm font-semibold text-emerald-300 mt-2 truncate font-num bg-slate-800/80 px-3 py-1.5 rounded-xl border border-slate-700"></p>
+                    <p id="postPublishSuccessSub" class="text-xs text-slate-400 mt-2">الوصفة منشورة الآن على الموقع الحي ويمكن للزوار تصفحها فوراً.</p>
+                </div>
+
+                <!-- Action Buttons: Create Another vs View Live vs All Recipes -->
+                <div class="space-y-2.5 pt-2">
+                    <button type="button" onclick="startAnotherRecipe()" id="btnStartAnotherRecipe"
+                        class="w-full py-3 px-4 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-extrabold rounded-xl shadow-lg shadow-emerald-500/25 transition text-xs sm:text-sm flex items-center justify-center gap-2 cursor-pointer">
+                        <span>✨</span> <span id="btnStartAnotherText">إنشاء وصفة أخرى مباشرة (Create Another)</span>
+                    </button>
+
+                    <a id="btnViewLiveRecipe" href="#" target="_blank"
+                        class="w-full py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-xl border border-slate-700 hover:border-emerald-500/40 transition text-xs flex items-center justify-center gap-2">
+                        <span>🌐</span> <span id="btnViewLiveText">فتح الوصفة لايف على الموقع</span> <span>↗</span>
+                    </a>
+
+                    <button type="button" onclick="goToRecipesList()" id="btnGoToRecipes"
+                        class="w-full py-2 px-4 text-slate-400 hover:text-white transition text-xs font-semibold cursor-pointer">
+                        <span id="btnGoToRecipesText">📋 تصفح قائمة الوصفات والمقالات</span>
+                    </button>
+                </div>
+
+                <button onclick="closePublishModal()" class="absolute top-4 left-4 text-slate-400 hover:text-white text-base p-1 rounded-lg hover:bg-slate-800 transition">
+                    ✕
+                </button>
             </div>
         </div>
 
@@ -1795,6 +1872,9 @@
                 }
             }
 
+            let aiProgressInterval = null;
+            let aiCountdownInterval = null;
+
             async function triggerAiGeneration() {
                 const provider = getActiveProvider();
                 const apiKey = document.getElementById('userApiKey').value.trim() || localStorage.getItem(`ai_key_${provider}`);
@@ -1814,8 +1894,52 @@
 
                 const btn = document.getElementById('btnGenerateAi');
                 const btnText = document.getElementById('btnTextGenerateAi');
+                const progressBox = document.getElementById('aiProgressBox');
+                const progressBar = document.getElementById('aiProgressBar');
+                const progressText = document.getElementById('aiProgressText');
+                const timerText = document.getElementById('aiTimerText');
+                const subStatusText = document.getElementById('aiSubStatusText');
+                const alertBox = document.getElementById('aiAlertBox');
+
+                if (alertBox) alertBox.classList.add('hidden');
+                if (aiCountdownInterval) { clearInterval(aiCountdownInterval); aiCountdownInterval = null; }
+
                 btn.disabled = true;
-                btnText.innerText = currentLang === 'ar' ? 'جاري الكتابة بالذكاء الاصطناعي... ⏳' : 'Generating with AI... ⏳';
+                btnText.innerText = currentLang === 'ar' ? 'جاري التوليد... ⏳' : 'Generating... ⏳';
+
+                if (progressBox) progressBox.classList.remove('hidden');
+                if (progressBar) progressBar.style.width = '20%';
+
+                let secondsElapsed = 0;
+                if (timerText) timerText.innerText = '0s';
+
+                if (aiProgressInterval) clearInterval(aiProgressInterval);
+                aiProgressInterval = setInterval(() => {
+                    secondsElapsed += 1;
+                    if (timerText) timerText.innerText = `${secondsElapsed}s`;
+
+                    if (secondsElapsed <= 4) {
+                        if (progressBar) progressBar.style.width = `${Math.min(45, 20 + secondsElapsed * 6)}%`;
+                        if (subStatusText) subStatusText.innerText = currentLang === 'ar' 
+                            ? 'جاري الاتصال بالسيرفر وتحليل اسم الوصفة...' 
+                            : 'Connecting to AI provider and analyzing recipe...';
+                    } else if (secondsElapsed <= 10) {
+                        if (progressBar) progressBar.style.width = `${Math.min(75, 45 + (secondsElapsed - 4) * 5)}%`;
+                        if (subStatusText) subStatusText.innerText = currentLang === 'ar' 
+                            ? '🍳 جاري صياغة المقادير وطريقة التحضير باحترافية... راه القضية غادة وخدامة' 
+                            : '🍳 Formulating precise ingredients & steps... Process is running smoothly';
+                    } else if (secondsElapsed <= 18) {
+                        if (progressBar) progressBar.style.width = `${Math.min(90, 75 + (secondsElapsed - 10) * 2)}%`;
+                        if (subStatusText) subStatusText.innerText = currentLang === 'ar' 
+                            ? '✍️ جاري كتابة المقال الحصري وتنسيق عناوين الـ SEO... ثواني ويكون كلشي واجد' 
+                            : '✍️ Writing exclusive article & SEO headers... Almost ready';
+                    } else {
+                        if (progressBar) progressBar.style.width = '95%';
+                        if (subStatusText) subStatusText.innerText = currentLang === 'ar' 
+                            ? '⚡ التدقيق النهائي لتفاصيل الوصفة... القضية غادة وخدامة، الموديل كيدير اللمسات الأخيرة' 
+                            : '⚡ Final check in progress... The model is adding the finishing touches';
+                    }
+                }, 1000);
 
                 try {
                     const res = await fetch('/api/ai/generate', {
@@ -1830,7 +1954,19 @@
                         })
                     });
                     const data = await res.json();
-                    if (!data.success) throw new Error(data.error || "Generation failed");
+                    
+                    if (aiProgressInterval) { clearInterval(aiProgressInterval); aiProgressInterval = null; }
+
+                    if (!data.success) {
+                        if (data.error_type === 'rate_limit' || (data.error && data.error.includes('429'))) {
+                            handleAiRateLimit(data.error || 'Rate limit reached', data.retry_after || 5);
+                            return;
+                        }
+                        throw new Error(data.error || "Generation failed");
+                    }
+
+                    if (progressBar) progressBar.style.width = '100%';
+                    if (subStatusText) subStatusText.innerText = currentLang === 'ar' ? '✅ تم توليد الوصفة وتجهيزها بنجاح!' : '✅ Recipe generated successfully!';
 
                     const rec = data.recipe;
                     document.getElementById('postTitle').value = rec.title || '';
@@ -1842,22 +1978,69 @@
                     if (rec.description) document.getElementById('postDescription').value = rec.description;
 
                     if (rec.ingredients && Array.isArray(rec.ingredients)) {
-                        document.getElementById('postIngredients').value = rec.ingredients.join(String.fromCharCode(10));
+                        document.getElementById('postIngredients').value = rec.ingredients.join('\n');
                     }
                     if (rec.instructions && Array.isArray(rec.instructions)) {
-                        document.getElementById('postInstructions').value = rec.instructions.join(String.fromCharCode(10));
+                        document.getElementById('postInstructions').value = rec.instructions.join('\n');
                     }
                     if (rec.article_html) {
                         document.getElementById('postHtml').value = rec.article_html;
                     }
 
-                    showToast(currentLang === 'ar' ? 'تم توليد المقال والوصفة بنجاح!' : 'Recipe generated successfully!');
+                    showToast(currentLang === 'ar' ? 'تم توليد المقال والوصفة بنجاح! تم ملء كافة الحقول 🎉' : 'Recipe generated successfully! All fields filled 🎉', 'success');
+
+                    // Smooth scroll down to main recipe form
+                    setTimeout(() => {
+                        const formTitle = document.getElementById('formSectionTitle');
+                        if (formTitle) formTitle.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        if (progressBox) progressBox.classList.add('hidden');
+                    }, 1200);
+
                 } catch (e) {
+                    if (aiProgressInterval) { clearInterval(aiProgressInterval); aiProgressInterval = null; }
+                    if (progressBox) progressBox.classList.add('hidden');
                     showToast(e.message, 'error');
                 } finally {
-                    btn.disabled = false;
-                    btnText.innerText = currentLang === 'ar' ? 'توليد الوصفة بالذكاء الاصطناعي' : 'Generate with AI';
+                    if (!aiCountdownInterval) {
+                        btn.disabled = false;
+                        btnText.innerText = currentLang === 'ar' ? 'توليد الوصفة بالذكاء الاصطناعي' : 'Generate with AI';
+                    }
                 }
+            }
+
+            function handleAiRateLimit(errorMsg, seconds = 5) {
+                const progressBox = document.getElementById('aiProgressBox');
+                if (progressBox) progressBox.classList.add('hidden');
+
+                const alertBox = document.getElementById('aiAlertBox');
+                const alertDesc = document.getElementById('aiAlertDesc');
+                const alertCount = document.getElementById('aiAlertCountdown');
+                const btn = document.getElementById('btnGenerateAi');
+                const btnText = document.getElementById('btnTextGenerateAi');
+
+                if (alertBox) alertBox.classList.remove('hidden');
+                if (alertDesc) alertDesc.innerText = errorMsg;
+
+                let remaining = seconds;
+                if (alertCount) alertCount.innerText = `${remaining}s`;
+                btn.disabled = true;
+                btnText.innerText = currentLang === 'ar' ? `انتظر (${remaining}s)... ⏳` : `Wait (${remaining}s)... ⏳`;
+
+                if (aiCountdownInterval) clearInterval(aiCountdownInterval);
+                aiCountdownInterval = setInterval(() => {
+                    remaining -= 1;
+                    if (remaining <= 0) {
+                        clearInterval(aiCountdownInterval);
+                        aiCountdownInterval = null;
+                        if (alertBox) alertBox.classList.add('hidden');
+                        btn.disabled = false;
+                        btnText.innerText = currentLang === 'ar' ? 'توليد الوصفة بالذكاء الاصطناعي' : 'Generate with AI';
+                        showToast(currentLang === 'ar' ? 'تم استئناف الخدمة، يمكنك الضغط الآن! ✨' : 'Ready to retry! ✨', 'info');
+                    } else {
+                        if (alertCount) alertCount.innerText = `${remaining}s`;
+                        btnText.innerText = currentLang === 'ar' ? `انتظر (${remaining}s)... ⏳` : `Wait (${remaining}s)... ⏳`;
+                    }
+                }, 1000);
             }
 
             async function handleCreateRecipe(e) {
@@ -1867,9 +2050,12 @@
                 btn.disabled = true;
                 btnText.innerText = currentLang === 'ar' ? 'جاري النشر وبناء الموقع... ⏳' : 'Publishing & Deploying... ⏳';
 
+                const titleVal = document.getElementById('postTitle').value.trim();
+                const slugVal = document.getElementById('postSlug').value.trim();
+
                 const formData = new FormData();
-                formData.append('title', document.getElementById('postTitle').value);
-                formData.append('slug', document.getElementById('postSlug').value);
+                formData.append('title', titleVal);
+                formData.append('slug', slugVal);
                 formData.append('category', document.getElementById('postCategory').value);
                 formData.append('author', document.getElementById('postAuthor').value);
                 formData.append('featured_image', document.getElementById('postImage').value);
@@ -1887,8 +2073,22 @@
                     if (!data.success) throw new Error(data.error || "Publication failed");
 
                     showToast(data.message, 'success');
-                    document.getElementById('createRecipeForm').reset();
-                    switchTab('recipes');
+
+                    // Show Post-Publish Success Action Modal
+                    const modal = document.getElementById('postPublishModal');
+                    const titleEl = document.getElementById('publishedRecipeTitle');
+                    const liveLink = document.getElementById('btnViewLiveRecipe');
+
+                    const effectiveSlug = data.slug || slugVal;
+                    if (titleEl) titleEl.innerText = titleVal || effectiveSlug;
+                    if (liveLink) liveLink.href = data.live_url || `https://make-food.com/${effectiveSlug}/`;
+
+                    if (modal) {
+                        modal.classList.remove('hidden');
+                        modal.classList.add('flex');
+                    }
+
+                    // Preload recipes list in background
                     loadRecipesList(true);
                 } catch (err) {
                     showToast(err.message, 'error');
@@ -1898,7 +2098,56 @@
                 }
             }
 
-            // Initialization on page load
+            function startAnotherRecipe() {
+                closePublishModal();
+                // Clean form
+                document.getElementById('createRecipeForm').reset();
+                document.getElementById('aiRecipeName').value = '';
+                document.getElementById('aiSourceContent').value = '';
+                const imgBox = document.getElementById('createImagePreviewBox');
+                if (imgBox) imgBox.classList.add('hidden');
+                
+                // Ensure on Create tab
+                switchTab('create');
+                setCreationType('ai');
+
+                // Smooth scroll to AI prompt input
+                setTimeout(() => {
+                    const inp = document.getElementById('aiRecipeName');
+                    if (inp) {
+                        inp.focus();
+                        inp.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    }
+                }, 200);
+
+                showToast(currentLang === 'ar' ? 'تم تفريغ الحقول وجاهز للوصفة التالية! ✨' : 'Form reset, ready for next recipe! ✨', 'info');
+            }
+
+            function resetRecipeFormWithConfirm() {
+                if (confirm(currentLang === 'ar' ? 'هل تريد تفريغ جميع الحقول لبدء وصفة جديدة؟' : 'Do you want to clear all fields to start a new recipe?')) {
+                    document.getElementById('createRecipeForm').reset();
+                    document.getElementById('aiRecipeName').value = '';
+                    document.getElementById('aiSourceContent').value = '';
+                    const imgBox = document.getElementById('createImagePreviewBox');
+                    if (imgBox) imgBox.classList.add('hidden');
+                    showToast(currentLang === 'ar' ? 'تم تفريغ الحقول بنجاح! ✨' : 'Fields cleared! ✨', 'info');
+                }
+            }
+
+            function goToRecipesList() {
+                closePublishModal();
+                switchTab('recipes');
+                loadRecipesList(true);
+            }
+
+            function closePublishModal() {
+                const modal = document.getElementById('postPublishModal');
+                if (modal) {
+                    modal.classList.add('hidden');
+                    modal.classList.remove('flex');
+                }
+            }
+
             window.addEventListener('DOMContentLoaded', () => {
                 applyLanguage(currentLang);
                 loadStats('last30');

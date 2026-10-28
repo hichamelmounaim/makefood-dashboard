@@ -5,6 +5,7 @@ import hmac
 import hashlib
 import urllib.request
 import urllib.parse
+import urllib.error
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
@@ -950,9 +951,9 @@ async def generate_recipe_ai(request: Request):
     input_text = body.get("input_text", "").strip()
     
     if not api_key:
-        return {"success": False, "error": "API Key is required. Please set it in AI Settings."}
+        return {"success": False, "error_type": "auth", "error": "يرجى ضبط مفتاح الـ API في تبويب الإعدادات أولاً / API Key is required."}
     if not input_text:
-        return {"success": False, "error": "Recipe title or source inspiration content is required."}
+        return {"success": False, "error": "يرجى إدخال اسم الوصفة أو النص الملهم / Recipe title or inspiration text is required."}
 
     system_instruction = (
         "You are a professional culinary chef, recipe creator, and food SEO expert for 'make-food.com'. "
@@ -977,54 +978,101 @@ async def generate_recipe_ai(request: Request):
     else:
         user_prompt = f"Rewrite and transform the following recipe / food inspiration text into a completely fresh, 100% original, high-quality recipe with rich article HTML:\n\n{input_text}"
 
-    try:
-        raw_output = ""
-        if provider == "google":
-            model_clean = model.replace("models/", "")
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_clean}:generateContent?key={api_key}"
-            payload = {
-                "system_instruction": {"parts": [{"text": system_instruction}]},
-                "contents": [{"parts": [{"text": user_prompt}]}],
-                "generationConfig": {"temperature": 0.7, "response_mime_type": "application/json"}
-            }
-            req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=35) as resp:
-                res_data = json.loads(resp.read().decode("utf-8"))
-                raw_output = res_data["candidates"][0]["content"]["parts"][0]["text"]
-        else:
-            url = "https://openrouter.ai/api/v1/chat/completions"
-            payload = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system_instruction},
-                    {"role": "user", "content": user_prompt}
-                ],
-                "temperature": 0.7
-            }
-            req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://partner.make-food.com"
-            })
-            with urllib.request.urlopen(req, timeout=35) as resp:
-                res_data = json.loads(resp.read().decode("utf-8"))
-                raw_output = res_data["choices"][0]["message"]["content"]
+    max_retries = 1
+    for attempt in range(max_retries + 1):
+        try:
+            raw_output = ""
+            if provider == "google":
+                model_clean = model.replace("models/", "")
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_clean}:generateContent?key={api_key}"
+                payload = {
+                    "system_instruction": {"parts": [{"text": system_instruction}]},
+                    "contents": [{"parts": [{"text": user_prompt}]}],
+                    "generationConfig": {"temperature": 0.7, "response_mime_type": "application/json"}
+                }
+                req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=45) as resp:
+                    res_data = json.loads(resp.read().decode("utf-8"))
+                    raw_output = res_data["candidates"][0]["content"]["parts"][0]["text"]
+            else:
+                url = "https://openrouter.ai/api/v1/chat/completions"
+                payload = {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_instruction},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    "temperature": 0.7
+                }
+                req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://partner.make-food.com",
+                    "X-Title": "MakeFood Partner Portal"
+                })
+                with urllib.request.urlopen(req, timeout=50) as resp:
+                    res_data = json.loads(resp.read().decode("utf-8"))
+                    raw_output = res_data["choices"][0]["message"]["content"]
 
-        clean_json_str = raw_output.strip()
-        if clean_json_str.startswith("```json"):
-            clean_json_str = clean_json_str[7:]
-        if clean_json_str.startswith("```"):
-            clean_json_str = clean_json_str[3:]
-        if clean_json_str.endswith("```"):
-            clean_json_str = clean_json_str[:-3]
-        clean_json_str = clean_json_str.strip()
+            # Robust JSON extraction
+            import re
+            json_match = re.search(r'(\{[\s\S]*\})', raw_output)
+            if json_match:
+                recipe_json = json.loads(json_match.group(1))
+            else:
+                clean_json_str = raw_output.strip()
+                if clean_json_str.startswith("```json"): clean_json_str = clean_json_str[7:]
+                if clean_json_str.startswith("```"): clean_json_str = clean_json_str[3:]
+                if clean_json_str.endswith("```"): clean_json_str = clean_json_str[:-3]
+                recipe_json = json.loads(clean_json_str.strip())
 
-        recipe_json = json.loads(clean_json_str)
-        return {"success": True, "recipe": recipe_json}
-    except Exception as e:
-        return {"success": False, "error": f"AI Generation failed: {str(e)}"}
+            return {"success": True, "recipe": recipe_json}
 
-# ================= DASHBOARD HTML =================
+        except urllib.error.HTTPError as he:
+            err_body = he.read().decode("utf-8", errors="ignore")
+            # If 429 (rate limit) or 503 (service unavailable) and attempt == 0, auto-retry once after 2.5s
+            if he.code in (429, 503) and attempt < max_retries:
+                time.sleep(2.5)
+                continue
+
+            if he.code == 429:
+                return {
+                    "success": False,
+                    "error_type": "rate_limit",
+                    "retry_after": 5,
+                    "error": "ضغط مؤقت على مزود الذكاء الاصطناعي (Rate Limit 429). راه القضية غادة، تسنى 5 ثواني وسيعاد تفعيل الزر تلقائياً."
+                }
+            elif he.code in (401, 403):
+                return {
+                    "success": False,
+                    "error_type": "auth",
+                    "error": "مفتاح الـ API غير صالح أو غير مصرح له. المرجو مراجعة مفتاح الـ API في الإعدادات."
+                }
+            elif he.code in (500, 502, 503, 504):
+                return {
+                    "success": False,
+                    "error_type": "server_busy",
+                    "error": "سيرفرات الذكاء الاصطناعي تشهد ضغطاً مؤقتاً. المرجو الانتظار قليلاً وإعادة المحاولة."
+                }
+            else:
+                return {"success": False, "error": f"خطأ من مزود الذكاء الاصطناعي ({he.code}): {err_body[:200]}"}
+
+        except (TimeoutError, urllib.error.URLError) as ue:
+            if "timed out" in str(ue).lower() or isinstance(ue, TimeoutError):
+                if attempt < max_retries:
+                    time.sleep(2)
+                    continue
+                return {
+                    "success": False,
+                    "error_type": "timeout",
+                    "error": "استغرق الموديل وقتاً أطول من المعتاد للاستجابة. يمكنك إعادة المحاولة أو اختيار موديل أسرع."
+                }
+            return {"success": False, "error": f"خطأ في الاتصال: {str(ue)}"}
+
+        except Exception as e:
+            return {"success": False, "error": f"فشل توليد الوصفة: {str(e)}"}
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard_page(request: Request):
     if not is_authenticated(request):
