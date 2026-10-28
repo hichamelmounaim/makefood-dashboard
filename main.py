@@ -868,11 +868,10 @@ async def fetch_ai_models(request: Request):
     provider = body.get("provider", "google")
     api_key = body.get("api_key", "").strip()
     
-    if not api_key:
-        return {"success": False, "error": "API Key is required"}
-        
     try:
         if provider == "google":
+            if not api_key:
+                return {"success": False, "error": "Google Gemini API Key is required"}
             url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
             req = urllib.request.Request(url, headers={"User-Agent": "MakeFoodPortal/1.0"})
             with urllib.request.urlopen(req, timeout=10) as resp:
@@ -886,11 +885,14 @@ async def fetch_ai_models(request: Request):
                 return {"success": True, "provider": "google", "models": models}
         else:
             url = "https://openrouter.ai/api/v1/models"
-            req = urllib.request.Request(url, headers={
-                "Authorization": f"Bearer {api_key}",
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
                 "HTTP-Referer": "https://partner.make-food.com",
                 "X-Title": "MakeFood Partner Portal"
-            })
+            }
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=20) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 all_raw = data.get("data", [])
