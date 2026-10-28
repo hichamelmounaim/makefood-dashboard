@@ -1667,6 +1667,9 @@
                 const key = localStorage.getItem(`ai_key_${provider}`) || '';
                 document.getElementById('userApiKey').value = key;
                 updateActiveModelBadge();
+                if (provider === 'openrouter' && (!cachedAiModels || cachedAiModels.length === 0)) {
+                    fetchAvailableModels();
+                }
             }
 
             function saveApiKey() {
@@ -1761,7 +1764,7 @@
             async function fetchAvailableModels() {
                 const provider = getActiveProvider();
                 const apiKey = document.getElementById('userApiKey').value.trim() || localStorage.getItem(`ai_key_${provider}`);
-                if (!apiKey) {
+                if (provider === 'google' && !apiKey) {
                     showToast(currentLang === 'ar' ? 'يرجى إدخال مفتاح الـ API أولاً' : 'Please enter an API Key first', 'error');
                     return;
                 }
