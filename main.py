@@ -866,7 +866,7 @@ async def fetch_ai_models(request: Request):
         body = {}
         
     provider = body.get("provider", "google")
-    api_key = body.get("api_key", "").strip()
+    api_key = (body.get("api_key") or "").strip()
     
     try:
         if provider == "google":
@@ -944,7 +944,7 @@ async def generate_recipe_ai(request: Request):
         body = {}
         
     provider = body.get("provider", "google")
-    api_key = body.get("api_key", "").strip()
+    api_key = (body.get("api_key") or "").strip()
     model = body.get("model", "gemini-1.5-flash")
     mode = body.get("mode", "name")
     input_text = body.get("input_text", "").strip()
