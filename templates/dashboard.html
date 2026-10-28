@@ -428,7 +428,7 @@
                             <div>
                                 <label id="lblPostImage" class="block text-xs font-bold text-slate-300 mb-2">رابط أو رفع الصورة البارزة (Image Upload / URL)</label>
                                 <div class="flex gap-2">
-                                    <input type="url" id="postImage" onchange="previewImage()" dir="ltr"
+                                    <input type="url" id="postImage" onchange="previewImage()" oninput="previewImage()" dir="ltr"
                                         placeholder="https://... أو ارفع صورة مباشرة ⬅️"
                                         class="flex-1 px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 text-left font-num">
                                     
@@ -455,11 +455,21 @@
                         </div>
 
                         <!-- Image Preview Box -->
-                        <div id="imagePreviewBox" class="hidden relative rounded-xl overflow-hidden border border-slate-800 max-h-56">
-                            <img id="imagePreviewEl" src="" alt="Preview" class="w-full h-56 object-cover">
-                            <button type="button" onclick="removeImagePreview('postImage', 'imagePreviewBox')" class="absolute top-2 right-2 p-1.5 rounded-lg bg-slate-900/80 hover:bg-rose-600 text-white text-xs font-bold backdrop-blur-md transition">
-                                ✕ إزالة الصورة
-                            </button>
+                        <div id="imagePreviewBox" class="hidden relative rounded-xl overflow-hidden border border-slate-800 max-h-64 group">
+                            <img id="imagePreviewEl" src="" alt="Preview" class="w-full h-64 object-cover">
+                            <div class="absolute inset-0 bg-gradient-to-t from-slate-950/80 via-transparent to-slate-950/40 pointer-events-none"></div>
+                            
+                            <div class="absolute top-2.5 right-2.5 flex items-center gap-2">
+                                <button type="button" onclick="insertImageIntoArticle('postImage')" class="px-3 py-1.5 rounded-lg bg-emerald-600/90 hover:bg-emerald-500 text-white text-xs font-bold backdrop-blur-md transition shadow-lg flex items-center gap-1.5">
+                                    <span>📸</span> <span>إدراج في نص المقال</span>
+                                </button>
+                                <button type="button" onclick="removeImagePreview('postImage', 'imagePreviewBox')" class="p-1.5 rounded-lg bg-slate-900/80 hover:bg-rose-600 text-white text-xs font-bold backdrop-blur-md transition shadow-lg">
+                                    ✕ إزالة
+                                </button>
+                            </div>
+                            <div class="absolute bottom-2.5 right-3 left-3 text-[11px] text-emerald-300 font-mono bg-slate-900/80 px-2.5 py-1 rounded-lg backdrop-blur-md truncate flex items-center justify-between">
+                                <span class="truncate">✓ جاهزة للعرض البارز وفي المقال</span>
+                            </div>
                         </div>
 
                         <!-- Cooking Timers & Servings -->
@@ -815,10 +825,20 @@
                 const file = inputEl.files && inputEl.files[0];
                 if (!file) return;
 
+                // 1. Instant local preview (0ms response time)
+                const previewBox = document.getElementById(previewBoxId);
+                const previewImg = document.getElementById(previewImgId);
+                if (previewImg && previewBox) {
+                    try {
+                        previewImg.src = URL.createObjectURL(file);
+                        previewBox.classList.remove('hidden');
+                    } catch(e) {}
+                }
+
                 const statusEl = document.getElementById(statusId);
                 if (statusEl) {
                     statusEl.classList.remove('hidden');
-                    statusEl.innerText = currentLang === 'ar' ? '⏳ جاري رفع الصورة إلى السيرفر...' : '⏳ Uploading image to server...';
+                    statusEl.innerText = currentLang === 'ar' ? '⏳ جاري رفع الصورة إلى السيرفر و Cloudflare R2...' : '⏳ Uploading image to server & Cloudflare R2...';
                 }
 
                 const formData = new FormData();
@@ -836,20 +856,44 @@
                     const urlInput = document.getElementById(targetUrlId);
                     if (urlInput) urlInput.value = data.url;
 
-                    // Update preview
-                    const previewBox = document.getElementById(previewBoxId);
-                    const previewImg = document.getElementById(previewImgId);
-                    if (previewImg) previewImg.src = data.url;
+                    // Update preview with permanent URL and multi-tier fallback
+                    if (previewImg) {
+                        previewImg.onerror = function() {
+                            if (data.fallback_url && this.src !== data.fallback_url) {
+                                this.src = data.fallback_url;
+                            } else if (data.cdn_url && this.src !== data.cdn_url) {
+                                this.src = data.cdn_url;
+                            }
+                        };
+                        previewImg.src = data.url;
+                    }
                     if (previewBox) previewBox.classList.remove('hidden');
 
                     if (statusEl) {
                         statusEl.innerText = currentLang === 'ar' ? '✅ تم رفع الصورة بنجاح!' : '✅ Image uploaded successfully!';
                         setTimeout(() => statusEl.classList.add('hidden'), 3500);
                     }
-                    showToast(currentLang === 'ar' ? 'تم رفع الصورة بنجاح!' : 'Image uploaded successfully!');
+                    showToast(currentLang === 'ar' ? 'تم رفع الصورة بنجاح وربطها بالمقال!' : 'Image uploaded & linked successfully!');
                 } catch (e) {
                     if (statusEl) statusEl.innerText = `❌ ${e.message}`;
                     showToast(e.message, 'error');
+                }
+            }
+
+            function insertImageIntoArticle(targetUrlId) {
+                const urlInput = document.getElementById(targetUrlId);
+                if (!urlInput || !urlInput.value) {
+                    showToast(currentLang === 'ar' ? 'يرجى رفع صورة أولاً' : 'Please upload an image first', 'error');
+                    return;
+                }
+                const isEdit = (targetUrlId === 'editImage');
+                const htmlEl = isEdit ? document.getElementById('editHtml') : document.getElementById('postHtml');
+                const titleEl = isEdit ? document.getElementById('editTitle') : document.getElementById('postTitle');
+                const altText = titleEl ? (titleEl.value.trim() || 'Recipe Step Image') : 'Recipe Step Image';
+                const tag = `\n<figure class="my-6">\n  <img src="${urlInput.value}" alt="${altText}" class="rounded-2xl w-full max-h-[500px] object-cover shadow-lg" loading="lazy" />\n</figure>\n`;
+                if (htmlEl) {
+                    htmlEl.value = (htmlEl.value ? htmlEl.value + '\n' : '') + tag;
+                    showToast(currentLang === 'ar' ? 'تم إدراج الصورة داخل نص المقال بنجاح!' : 'Image inserted into article body!');
                 }
             }
 

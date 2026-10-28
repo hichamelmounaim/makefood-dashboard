@@ -217,9 +217,34 @@ async def upload_image(request: Request, image: UploadFile = File(...)):
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(image.file, buffer)
         
-    final_url = f"https://partner.make-food.com/uploads/{safe_name}"
+    partner_url = f"https://partner.make-food.com/uploads/{safe_name}"
+    makefood_url = f"https://make-food.com/uploads/{safe_name}"
+    cdn_url = f"https://media.themagicrecipe.com/uploads/{safe_name}"
     
-    # Also push image to GitHub make-food.com public/uploads/ if token configured
+    # 1. Upload to Cloudflare R2 Global CDN
+    try:
+        import boto3
+        from botocore.config import Config
+        s3 = boto3.client(
+            's3',
+            endpoint_url='https://b13e9d704d273ebc42675122e41a9726.r2.cloudflarestorage.com',
+            aws_access_key_id='1d26713429e1a23c991f2ac06e242f75',
+            aws_secret_access_key='69d11c7fe169ece537ab0569842d8def7c8a739d9b308da97bacc6a3c0501248',
+            region_name='auto',
+            config=Config(signature_version='s3v4', s3={'addressing_style': 'path'})
+        )
+        content_type = "image/jpeg" if ext in [".jpg", ".jpeg"] else ("image/png" if ext == ".png" else "image/webp")
+        with open(file_path, "rb") as f_r2:
+            s3.put_object(
+                Bucket='recipe-media',
+                Key=f'uploads/{safe_name}',
+                Body=f_r2.read(),
+                ContentType=content_type
+            )
+    except Exception as e_r2:
+        print("Note: R2 upload fallback:", e_r2)
+
+    # 2. Also push image to GitHub make-food.com public/uploads/ if token configured
     if CONFIG.get("GITHUB_TOKEN") and CONFIG.get("REPO_NAME"):
         try:
             with open(file_path, "rb") as f_img:
@@ -242,14 +267,15 @@ async def upload_image(request: Request, image: UploadFile = File(...)):
             )
             with urllib.request.urlopen(req_gh):
                 pass
-            final_url = f"https://make-food.com/uploads/{safe_name}"
         except Exception as e:
             print("Note: GitHub direct content push skipped, fallback to partner upload URL:", e)
 
     return {
         "success": True,
         "filename": safe_name,
-        "url": final_url
+        "url": makefood_url,
+        "fallback_url": partner_url,
+        "cdn_url": cdn_url
     }
 
 # ================= STATS API =================
