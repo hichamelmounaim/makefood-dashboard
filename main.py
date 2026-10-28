@@ -891,10 +891,43 @@ async def fetch_ai_models(request: Request):
                 "HTTP-Referer": "https://partner.make-food.com",
                 "X-Title": "MakeFood Partner Portal"
             })
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with urllib.request.urlopen(req, timeout=20) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-                models = [{"id": m["id"], "name": m.get("name", m["id"])} for m in data.get("data", [])]
-                return {"success": True, "provider": "openrouter", "models": models[:60]}
+                all_raw = data.get("data", [])
+                
+                # Fetch ALL models without any arbitrary cutoff/limit
+                models = []
+                for m in all_raw:
+                    m_id = m.get("id", "")
+                    m_name = m.get("name") or m_id
+                    provider_prefix = m_id.split("/")[0] if "/" in m_id else "other"
+                    models.append({
+                        "id": m_id,
+                        "name": m_name,
+                        "provider": provider_prefix,
+                        "context_length": m.get("context_length", 0)
+                    })
+                
+                # Priority sorting: Place top flagship models first, then sort alphabetically
+                priority_keywords = [
+                    "claude-3.5", "claude-3-7", "gpt-4o", "o1", "o3", "deepseek-v3", 
+                    "deepseek-r1", "gemini-2.0", "gemini-1.5", "llama-3.3", "qwen-2.5", 
+                    "mistral-large"
+                ]
+                def sort_key(item):
+                    mid = item["id"].lower()
+                    for idx, kw in enumerate(priority_keywords):
+                        if kw in mid:
+                            return (0, idx, item["name"].lower())
+                    return (1, 0, item["name"].lower())
+
+                models.sort(key=sort_key)
+                return {
+                    "success": True,
+                    "provider": "openrouter",
+                    "total": len(models),
+                    "models": models
+                }
     except Exception as e:
         return {"success": False, "error": f"Failed to fetch models: {str(e)}"}
 
