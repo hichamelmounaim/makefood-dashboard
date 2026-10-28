@@ -16,13 +16,22 @@
             .custom-scrollbar::-webkit-scrollbar-track { background: #0f172a; }
             .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
             .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #10b981; }
+            html, body {
+                overflow-x: hidden;
+                max-width: 100vw;
+            }
+            .safe-area-pb {
+                padding-bottom: env(safe-area-inset-bottom, 0.75rem);
+            }
+            .no-scrollbar::-webkit-scrollbar { display: none; }
+            .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
         </style>
     </head>
     <body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col selection:bg-emerald-500 selection:text-slate-950">
 
         <!-- Top Navigation -->
         <header class="sticky top-0 z-40 bg-slate-900/90 backdrop-blur-md border-b border-slate-800">
-            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+            <div class="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
                 
                 <!-- Logo & Brand -->
                 <div class="flex items-center gap-3">
@@ -42,8 +51,8 @@
                     </div>
                 </div>
 
-                <!-- Navigation Tabs -->
-                <nav class="flex items-center gap-1 sm:gap-2">
+                <!-- Desktop Navigation Tabs (Hidden on mobile) -->
+                <nav class="hidden md:flex items-center gap-1 sm:gap-2">
                     <button onclick="switchTab('analytics')" id="nav-analytics" class="px-3 py-2 rounded-xl text-xs sm:text-sm font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 transition flex items-center gap-1.5">
                         <span>📊</span> <span id="tabNameAnalytics">الإحصائيات والأرباح</span>
                     </button>
@@ -74,7 +83,7 @@
         </header>
 
         <!-- Main Workspace -->
-        <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <main class="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-5 sm:py-8 pb-24 md:pb-8">
 
             <!-- ================= TAB 1: REVENUE & ANALYTICS ================= -->
             <div id="tab-analytics" class="space-y-8">
@@ -89,12 +98,12 @@
                     </div>
                     
                     <!-- Date Range Switcher -->
-                    <div class="flex items-center gap-1 bg-slate-800/80 p-1 rounded-xl border border-slate-700/60 text-xs font-num">
-                        <button onclick="changeRange('today')" id="btn-today" class="px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-white transition">Today</button>
-                        <button onclick="changeRange('yesterday')" id="btn-yesterday" class="px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-white transition">Yesterday</button>
-                        <button onclick="changeRange('last7')" id="btn-last7" class="px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-white transition">7 Days</button>
-                        <button onclick="changeRange('last30')" id="btn-last30" class="px-2.5 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30 transition">30 Days</button>
-                        <button onclick="changeRange('month')" id="btn-month" class="px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-white transition">This Month</button>
+                    <div class="flex items-center gap-1 bg-slate-800/80 p-1 rounded-xl border border-slate-700/60 text-xs font-num overflow-x-auto max-w-full no-scrollbar">
+                        <button onclick="changeRange('today')" id="btn-today" class="px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-white transition whitespace-nowrap">Today</button>
+                        <button onclick="changeRange('yesterday')" id="btn-yesterday" class="px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-white transition whitespace-nowrap">Yesterday</button>
+                        <button onclick="changeRange('last7')" id="btn-last7" class="px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-white transition whitespace-nowrap">7 Days</button>
+                        <button onclick="changeRange('last30')" id="btn-last30" class="px-2.5 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30 transition whitespace-nowrap">30 Days</button>
+                        <button onclick="changeRange('month')" id="btn-month" class="px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-white transition whitespace-nowrap">This Month</button>
                     </div>
                 </div>
 
@@ -262,36 +271,38 @@
             <div id="tab-recipes" class="hidden space-y-6">
                 
                 <!-- Controls Bar -->
-                <div class="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4 bg-slate-900/60 border border-slate-800/80 p-5 rounded-2xl">
+                <div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-slate-900/60 border border-slate-800/80 p-4 sm:p-5 rounded-2xl">
                     <div>
                         <div class="flex items-center gap-2">
-                            <h2 id="recipesListTitle" class="text-base font-bold text-white">جميع مقالات ووصفات make-food.com</h2>
+                            <h2 id="recipesListTitle" class="text-sm sm:text-base font-bold text-white">جميع مقالات ووصفات make-food.com</h2>
                             <span id="recipes-count-badge" class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-num">
                                 1,181
                             </span>
                         </div>
-                        <p id="recipesListSub" class="text-xs text-slate-400 mt-1">تصفح، ابحث، عدّل أو احذف أي وصفة مع نشر فوري وتلقائي على الموقع الحي</p>
+                        <p id="recipesListSub" class="text-[11px] sm:text-xs text-slate-400 mt-1">تصفح، ابحث، عدّل أو احذف أي وصفة مع نشر فوري وتلقائي على الموقع الحي</p>
                     </div>
 
                     <!-- Search, Category Filter, and Add Button -->
-                    <div class="flex flex-wrap items-center gap-2.5">
+                    <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                         <div class="w-full sm:w-56">
                             <input type="text" id="recipeSearchInput" onkeyup="handleRecipeSearch()"
                                 placeholder="🔍 ابحث عن أي وصفة..."
-                                class="w-full px-3.5 py-2 bg-slate-800 border border-slate-700 rounded-xl text-white placeholder-slate-500 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500 transition">
+                                class="w-full px-3.5 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white placeholder-slate-500 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500 transition">
                         </div>
                         
-                        <div class="w-full sm:w-40">
-                            <select id="recipeCategoryFilter" onchange="handleCategoryFilter()"
-                                class="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-white text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500 transition font-num">
-                                <option value="all">كل التصنيفات (All)</option>
-                            </select>
-                        </div>
+                        <div class="flex items-center gap-2">
+                            <div class="flex-1 sm:w-40">
+                                <select id="recipeCategoryFilter" onchange="handleCategoryFilter()"
+                                    class="w-full px-3 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500 transition font-num">
+                                    <option value="all">كل التصنيفات (All)</option>
+                                </select>
+                            </div>
 
-                        <button onclick="switchTab('create')" id="btnHeaderNewPost"
-                            class="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl text-xs shadow-md shadow-emerald-500/20 transition flex items-center gap-1.5 whitespace-nowrap">
-                            <span>➕</span> <span id="btnHeaderNewPostText">مقال جديد</span>
-                        </button>
+                            <button onclick="switchTab('create')" id="btnHeaderNewPost"
+                                class="px-4 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl text-xs shadow-md shadow-emerald-500/20 transition flex items-center justify-center gap-1.5 whitespace-nowrap">
+                                <span>➕</span> <span id="btnHeaderNewPostText">مقال جديد</span>
+                            </button>
+                        </div>
                     </div>
                 </div>
 
@@ -473,21 +484,21 @@
                         </div>
 
                         <!-- Cooking Timers & Servings -->
-                        <div class="grid grid-cols-3 gap-4 bg-slate-800/40 p-4 rounded-xl border border-slate-800 text-center font-num">
+                        <div class="grid grid-cols-3 gap-2 sm:gap-4 bg-slate-800/40 p-3 sm:p-4 rounded-xl border border-slate-800 text-center font-num">
                             <div>
-                                <label id="lblPrepTime" class="block text-xs font-semibold text-slate-400 mb-1">وقت التحضير (دقيقة)</label>
+                                <label id="lblPrepTime" class="block text-[10px] sm:text-xs font-semibold text-slate-400 mb-1 truncate">وقت التحضير (د)</label>
                                 <input type="number" id="postPrepTime" value="15" min="1"
-                                    class="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-white text-center text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                                    class="w-full px-2 sm:px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-white text-center text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
                             </div>
                             <div>
-                                <label id="lblCookTime" class="block text-xs font-semibold text-slate-400 mb-1">وقت الطهي (دقيقة)</label>
+                                <label id="lblCookTime" class="block text-[10px] sm:text-xs font-semibold text-slate-400 mb-1 truncate">وقت الطهي (د)</label>
                                 <input type="number" id="postCookTime" value="25" min="1"
-                                    class="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-white text-center text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                                    class="w-full px-2 sm:px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-white text-center text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
                             </div>
                             <div>
-                                <label id="lblServings" class="block text-xs font-semibold text-slate-400 mb-1">عدد الحصص</label>
+                                <label id="lblServings" class="block text-[10px] sm:text-xs font-semibold text-slate-400 mb-1 truncate">عدد الحصص</label>
                                 <input type="number" id="postServings" value="4" min="1"
-                                    class="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-white text-center text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                                    class="w-full px-2 sm:px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-white text-center text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
                             </div>
                         </div>
 
@@ -524,12 +535,12 @@
                         </div>
 
                         <!-- Submit Button -->
-                        <div class="pt-4 border-t border-slate-800 flex items-center justify-between">
-                            <p class="text-xs text-slate-400">
+                        <div class="pt-4 border-t border-slate-800 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+                            <p class="text-xs text-slate-400 text-center sm:text-right">
                                 🚀 <span id="publishNoteText">سيتم النشر فورياً عبر Git وبناء الموقع الحي أوتوماتيكياً.</span>
                             </p>
                             <button type="submit" id="btnPublishRecipe"
-                                class="py-3 px-8 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-extrabold rounded-xl shadow-lg shadow-emerald-500/25 transition text-sm flex items-center gap-2">
+                                class="w-full sm:w-auto py-3 px-6 sm:px-8 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-extrabold rounded-xl shadow-lg shadow-emerald-500/25 transition text-xs sm:text-sm flex items-center justify-center gap-2">
                                 <span>🚀</span> <span id="btnTextPublish">نشر الوصفة مباشرة على make-food.com</span>
                             </button>
                         </div>
@@ -627,8 +638,8 @@
         </main>
 
         <!-- ================= EDIT RECIPE MODAL (UPDATE) ================= -->
-        <div id="editRecipeModal" class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md hidden items-center justify-center p-4">
-            <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-4xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
+        <div id="editRecipeModal" class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md hidden items-center justify-center p-2 sm:p-4 pb-20 md:pb-4">
+            <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-4xl max-h-[85vh] sm:max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
                 
                 <!-- Modal Header -->
                 <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-900/90">
@@ -912,6 +923,10 @@
             const dict = {
                 ar: {
                     topSubtitle: "لوحة الشريك الخاصة بالإحصائيات والمقالات",
+                    mobileTabAnalytics: "الإحصائيات",
+                    mobileTabRecipes: "الوصفات",
+                    mobileTabCreate: "مقال جديد",
+                    mobileTabSettings: "الذكاء الاصطناعي",
                     tabAnalytics: "الإحصائيات والأرباح",
                     tabRecipes: "المقالات والوصفات (CRUD)",
                     tabCreate: "إنشاء مقال جديد",
@@ -1049,6 +1064,10 @@
 
                 document.getElementById('langBtnText').innerText = t.langBtn;
                 document.getElementById('topSubtitle').innerText = t.topSubtitle;
+            if (document.getElementById('mobileTabAnalytics')) document.getElementById('mobileTabAnalytics').innerText = t.mobileTabAnalytics || 'Analytics';
+            if (document.getElementById('mobileTabRecipes')) document.getElementById('mobileTabRecipes').innerText = t.mobileTabRecipes || 'Recipes';
+            if (document.getElementById('mobileTabCreate')) document.getElementById('mobileTabCreate').innerText = t.mobileTabCreate || 'New Post';
+            if (document.getElementById('mobileTabSettings')) document.getElementById('mobileTabSettings').innerText = t.mobileTabSettings || 'AI & Setup';
                 document.getElementById('tabNameAnalytics').innerText = t.tabAnalytics;
                 document.getElementById('tabNameRecipes').innerText = t.tabRecipes;
                 document.getElementById('tabNameCreate').innerText = t.tabCreate;
@@ -1111,12 +1130,15 @@
                 ['analytics', 'recipes', 'create', 'settings'].forEach(id => {
                     const tabEl = document.getElementById(`tab-${id}`);
                     const navEl = document.getElementById(`nav-${id}`);
+                    const mobNavEl = document.getElementById(`mobile-nav-${id}`);
                     if (id === tabId) {
                         tabEl.classList.remove('hidden');
-                        navEl.className = "px-3 py-2 rounded-xl text-xs sm:text-sm font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 transition flex items-center gap-1.5";
+                        if (navEl) navEl.className = "px-3 py-2 rounded-xl text-xs sm:text-sm font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 transition flex items-center gap-1.5";
+                        if (mobNavEl) mobNavEl.className = "flex flex-col items-center justify-center flex-1 py-1 text-emerald-400 font-bold transition";
                     } else {
                         tabEl.classList.add('hidden');
-                        navEl.className = "px-3 py-2 rounded-xl text-xs sm:text-sm font-semibold text-slate-400 hover:text-white hover:bg-slate-800/60 transition flex items-center gap-1.5";
+                        if (navEl) navEl.className = "px-3 py-2 rounded-xl text-xs sm:text-sm font-semibold text-slate-400 hover:text-white hover:bg-slate-800/60 transition flex items-center gap-1.5";
+                        if (mobNavEl) mobNavEl.className = "flex flex-col items-center justify-center flex-1 py-1 text-slate-400 font-medium hover:text-white transition";
                     }
                 });
                 if (tabId === 'recipes' && allRecipesData.length === 0) {
@@ -1345,32 +1367,31 @@
                 const t = dict[currentLang];
                 container.innerHTML = recipes.map(r => `
                     <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between hover:border-slate-700 transition shadow-lg group">
-                        <div class="flex gap-4">
-                            <img src="${r.image || 'https://images.unsplash.com/photo-1495521821757-a1efb6729352?auto=format&fit=crop&w=300&q=80'}" alt="${r.title}" class="w-20 h-20 rounded-xl object-cover border border-slate-800 flex-shrink-0">
-                            <div class="overflow-hidden w-full">
-                                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20 font-num">
-                                    ${r.category}
-                                </span>
-                                <h3 class="text-xs sm:text-sm font-bold text-white mt-1.5 truncate group-hover:text-emerald-400 transition" title="${r.title}">${r.title}</h3>
-                                <p class="text-[11px] text-slate-400 mt-1 font-num">${r.prep_time || '15 min'} • ${r.servings || '4 servings'}</p>
+                        <div class="flex items-start gap-3.5">
+                            <img src="${r.image || 'https://images.unsplash.com/photo-1495521821757-a1efb6729352?auto=format&fit=crop&w=300&q=80'}" alt="${r.title}" class="w-20 h-20 rounded-xl object-cover border border-slate-800 flex-shrink-0 shadow-sm" onerror="this.src='https://images.unsplash.com/photo-1495521821757-a1efb6729352?auto=format&fit=crop&w=300&q=80'">
+                            <div class="overflow-hidden min-w-0 flex-1">
+                                <div class="flex items-center gap-1.5 flex-wrap">
+                                    <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20 font-num">
+                                        ${r.category || 'Recipe'}
+                                    </span>
+                                    <span class="text-[10px] text-slate-500 font-num">${r.published_at ? r.published_at.slice(0, 10) : ''}</span>
+                                </div>
+                                <h3 class="text-xs sm:text-sm font-bold text-white mt-1.5 line-clamp-2 group-hover:text-emerald-400 transition leading-snug" title="${r.title}">${r.title}</h3>
+                                <p class="text-[11px] text-slate-400 mt-1 font-num" dir="ltr"><span class="inline-block text-left">${r.prep_time || '15 min'} • ${r.servings || '4 servings'}</span></p>
                             </div>
                         </div>
 
                         <!-- Card Action Buttons (View, Edit, Delete) -->
-                        <div class="flex items-center justify-between pt-3 border-t border-slate-800/80 mt-3">
-                            <span class="text-[10px] text-slate-500 font-num">${r.published_at ? r.published_at.slice(0, 10) : ''}</span>
-                            
-                            <div class="flex items-center gap-1.5">
-                                <a href="${r.url}" target="_blank" class="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-emerald-400 hover:text-emerald-300 transition flex items-center gap-0.5 font-num" title="View live page">
-                                    <span>👁️</span> <span>${t.viewLive}</span>
-                                </a>
-                                <button onclick="openEditModal('${r.slug}')" class="px-2 py-1 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/20 text-[11px] font-bold text-blue-400 hover:text-blue-300 transition flex items-center gap-0.5" title="Edit recipe">
-                                    <span>✏️</span> <span>${t.editRecipe}</span>
-                                </button>
-                                <button onclick="confirmDeleteRecipe('${r.slug}', '${encodeURIComponent(r.title)}')" class="px-2 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 text-[11px] font-bold text-rose-400 hover:text-rose-300 transition flex items-center gap-0.5" title="Delete recipe">
-                                    <span>🗑️</span>
-                                </button>
-                            </div>
+                        <div class="flex items-center justify-end gap-1.5 pt-3 border-t border-slate-800/80 mt-3">
+                            <a href="${r.url}" target="_blank" class="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-emerald-400 hover:text-emerald-300 transition flex items-center gap-1 font-num" title="View live page">
+                                <span>👁️</span> <span>${t.viewLive}</span>
+                            </a>
+                            <button onclick="openEditModal('${r.slug}')" class="px-2.5 py-1.5 rounded-xl bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/20 text-[11px] font-bold text-blue-400 hover:text-blue-300 transition flex items-center gap-1" title="Edit recipe">
+                                <span>✏️</span> <span>${t.editRecipe}</span>
+                            </button>
+                            <button onclick="confirmDeleteRecipe('${r.slug}', '${encodeURIComponent(r.title)}')" class="p-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 text-[11px] font-bold text-rose-400 hover:text-rose-300 transition flex items-center justify-center" title="Delete recipe">
+                                <span>🗑️</span>
+                            </button>
                         </div>
                     </div>
                 `).join('');
@@ -1735,5 +1756,26 @@
                 handleProviderChange();
             });
         </script>
-    </body>
+    
+        <!-- Mobile Bottom Navigation Bar (Persistent Native Feel) -->
+        <nav class="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-slate-900/95 backdrop-blur-xl border-t border-slate-800 px-2 py-1.5 flex items-center justify-around shadow-2xl safe-area-pb">
+            <button onclick="switchTab('analytics')" id="mobile-nav-analytics" class="flex flex-col items-center justify-center flex-1 py-1 text-emerald-400 font-bold transition">
+                <span class="text-xl">📊</span>
+                <span class="text-[10px] mt-0.5" id="mobileTabAnalytics">الإحصائيات</span>
+            </button>
+            <button onclick="switchTab('recipes')" id="mobile-nav-recipes" class="flex flex-col items-center justify-center flex-1 py-1 text-slate-400 font-medium hover:text-white transition">
+                <span class="text-xl">📝</span>
+                <span class="text-[10px] mt-0.5" id="mobileTabRecipes">الوصفات</span>
+            </button>
+            <button onclick="switchTab('create')" id="mobile-nav-create" class="flex flex-col items-center justify-center flex-1 py-1 text-slate-400 font-medium hover:text-white transition">
+                <span class="text-xl">➕</span>
+                <span class="text-[10px] mt-0.5" id="mobileTabCreate">مقال جديد</span>
+            </button>
+            <button onclick="switchTab('settings')" id="mobile-nav-settings" class="flex flex-col items-center justify-center flex-1 py-1 text-slate-400 font-medium hover:text-white transition">
+                <span class="text-xl">⚙️</span>
+                <span class="text-[10px] mt-0.5" id="mobileTabSettings">الإعدادات و AI</span>
+            </button>
+        </nav>
+
+</body>
     </html>
