@@ -284,10 +284,13 @@
 
                     <!-- Search, Category Filter, and Add Button -->
                     <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                        <div class="w-full sm:w-56">
-                            <input type="text" id="recipeSearchInput" onkeyup="handleRecipeSearch()"
-                                placeholder="🔍 ابحث عن أي وصفة..."
+                        <div class="relative w-full sm:w-64">
+                            <input type="text" id="recipeSearchInput" onkeyup="handleAdminAutocomplete(event)" onfocus="handleAdminAutocomplete(event)"
+                                placeholder="🔍 ابحث عن أي وصفة مع اقتراحات فورية..." autocomplete="off"
                                 class="w-full px-3.5 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white placeholder-slate-500 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500 transition">
+                            <!-- Instant Autocomplete Dropdown -->
+                            <div id="adminSearchAutocomplete" class="hidden absolute right-0 left-0 top-full mt-2 bg-slate-900 border border-slate-700/80 rounded-2xl shadow-2xl z-50 overflow-hidden divide-y divide-slate-800/80 max-h-80 overflow-y-auto custom-scrollbar">
+                            </div>
                         </div>
                         
                         <div class="flex items-center gap-2">
@@ -1351,12 +1354,86 @@
             }
 
             let searchTimeout = null;
-            function handleRecipeSearch() {
+            function handleAdminAutocomplete(e) {
+                const input = document.getElementById('recipeSearchInput');
+                const query = (input.value || '').trim();
+                const dropdown = document.getElementById('adminSearchAutocomplete');
+
+                if (e && e.key === 'Escape') {
+                    if (dropdown) dropdown.classList.add('hidden');
+                    return;
+                }
+
+                if (!query) {
+                    if (dropdown) dropdown.classList.add('hidden');
+                    clearTimeout(searchTimeout);
+                    searchTimeout = setTimeout(() => { loadRecipesList(true); }, 200);
+                    return;
+                }
+
+                // Client-side fast autocomplete filter on loaded recipes
+                const qLower = query.toLowerCase();
+                const matches = allRecipesData.filter(r => 
+                    (r.title && r.title.toLowerCase().includes(qLower)) || 
+                    (r.slug && r.slug.toLowerCase().includes(qLower)) ||
+                    (r.category && r.category.toLowerCase().includes(qLower))
+                );
+
+                if (dropdown) {
+                    if (!matches.length) {
+                        dropdown.innerHTML = '<div class="p-4 text-center text-xs text-slate-500">لا توجد وصفة مطابقة / No matching recipes</div>';
+                        dropdown.classList.remove('hidden');
+                    } else {
+                        dropdown.innerHTML = matches.slice(0, 6).map(r => `
+                            <div class="p-2.5 hover:bg-slate-800/80 transition flex items-center justify-between gap-3 cursor-pointer group" onclick="selectAdminSearchMatch('${r.slug}')">
+                                <div class="flex items-center gap-2.5 min-w-0">
+                                    <img src="${r.image || 'https://images.unsplash.com/photo-1495521821757-a1efb6729352?auto=format&fit=crop&w=80&q=80'}" class="w-9 h-9 rounded-lg object-cover flex-shrink-0 border border-slate-800" onerror="this.src='https://images.unsplash.com/photo-1495521821757-a1efb6729352?auto=format&fit=crop&w=80&q=80'">
+                                    <div class="min-w-0">
+                                        <h4 class="text-xs font-bold text-white group-hover:text-emerald-400 truncate leading-snug">${highlightAdminText(r.title, query)}</h4>
+                                        <span class="text-[10px] text-slate-400 font-num">${r.category || 'Recipe'} • ${r.prep_time || '15 min'}</span>
+                                    </div>
+                                </div>
+                                <div class="flex items-center gap-1 flex-shrink-0" onclick="event.stopPropagation()">
+                                    <a href="${r.url}" target="_blank" class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-400 text-xs font-bold" title="View live">👁️</a>
+                                    <button type="button" onclick="openEditModal('${r.slug}')" class="p-1.5 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 text-xs font-bold" title="Edit">✏️</button>
+                                </div>
+                            </div>
+                        `).join('');
+                        dropdown.classList.remove('hidden');
+                    }
+                }
+
+                // Also trigger backend search with debounce for full catalogue
                 clearTimeout(searchTimeout);
                 searchTimeout = setTimeout(() => {
                     loadRecipesList(true);
-                }, 300);
+                }, 400);
             }
+
+            function selectAdminSearchMatch(slug) {
+                const dropdown = document.getElementById('adminSearchAutocomplete');
+                if (dropdown) dropdown.classList.add('hidden');
+                const matched = allRecipesData.filter(r => r.slug === slug);
+                if (matched.length) {
+                    document.getElementById('recipeSearchInput').value = matched[0].title;
+                    renderRecipesGrid(matched, false);
+                }
+            }
+
+            function highlightAdminText(text, q) {
+                if (!q) return text;
+                const safeQ = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const regex = new RegExp(`(${safeQ})`, 'gi');
+                return text.replace(regex, '<mark class="bg-emerald-500/30 text-emerald-300 font-bold px-0.5 rounded">$1</mark>');
+            }
+
+            document.addEventListener('click', (e) => {
+                const dropdown = document.getElementById('adminSearchAutocomplete');
+                const searchInput = document.getElementById('recipeSearchInput');
+                if (dropdown && !dropdown.contains(e.target) && e.target !== searchInput) {
+                    dropdown.classList.add('hidden');
+                }
+            });
 
             function renderRecipesGrid(recipes, append = false) {
                 const container = document.getElementById('recipesGrid');

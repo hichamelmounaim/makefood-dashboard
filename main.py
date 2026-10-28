@@ -148,16 +148,33 @@ def push_recipes_to_github_and_redeploy(all_recipes: list, commit_message: str):
     except Exception as e:
         print("Note: Coolify deploy trigger exception:", e)
 
+# Rate limiting tracking for login
+failed_login_attempts = {}
+
 def sign_session(username: str) -> str:
-    sig = hmac.new(CONFIG["SECRET_KEY"].encode(), username.encode(), hashlib.sha256).hexdigest()
-    return f"{username}:{sig}"
+    ts = str(int(time.time()))
+    payload = f"{username}:{ts}"
+    sig = hmac.new(CONFIG["SECRET_KEY"].encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return f"{username}:{ts}:{sig}"
 
 def verify_session(token: str) -> Optional[str]:
     try:
-        username, sig = token.split(":")
-        expected = hmac.new(CONFIG["SECRET_KEY"].encode(), username.encode(), hashlib.sha256).hexdigest()
-        if hmac.compare_digest(sig, expected):
-            return username
+        parts = token.split(":")
+        if len(parts) == 3:
+            username, ts, sig = parts
+            # Check 30 days expiration
+            if int(ts) < int(time.time()) - (86400 * 30):
+                return None
+            payload = f"{username}:{ts}"
+            expected = hmac.new(CONFIG["SECRET_KEY"].encode(), payload.encode(), hashlib.sha256).hexdigest()
+            if hmac.compare_digest(sig, expected):
+                return username
+        elif len(parts) == 2:
+            # Backwards compatibility for existing active sessions
+            username, sig = parts
+            expected = hmac.new(CONFIG["SECRET_KEY"].encode(), username.encode(), hashlib.sha256).hexdigest()
+            if hmac.compare_digest(sig, expected):
+                return username
     except Exception:
         pass
     return None
@@ -176,8 +193,31 @@ async def login_page(request: Request):
     return HTMLResponse(get_template("login.html"))
 
 @app.post("/login")
-async def login(username: str = Form(...), password: str = Form(...)):
-    if username == CONFIG["DASH_USER"] and password == CONFIG["DASH_PASS"]:
+async def login(request: Request, username: str = Form(...), password: str = Form(...)):
+    client_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else "unknown")
+    now = time.time()
+    
+    # Rate limit check (max 5 failed attempts within 15 minutes)
+    if client_ip in failed_login_attempts:
+        attempts, lock_until = failed_login_attempts[client_ip]
+        if lock_until > now:
+            remaining_mins = int((lock_until - now) / 60) + 1
+            return HTMLResponse(f"""
+                <script>
+                    alert("تم حظر محاولات الدخول مؤقتاً لحماية الحساب. يرجى الانتظار {remaining_mins} دقيقة قبل المحاولة مجدداً.");
+                    window.location.href = "/login";
+                </script>
+            """, status_code=429)
+        elif now > lock_until and attempts >= 5:
+            # Reset after lock expires
+            del failed_login_attempts[client_ip]
+
+    valid_user = hmac.compare_digest(username.strip(), CONFIG["DASH_USER"])
+    valid_pass = hmac.compare_digest(password.strip(), CONFIG["DASH_PASS"])
+
+    if valid_user and valid_pass:
+        if client_ip in failed_login_attempts:
+            del failed_login_attempts[client_ip]
         response = RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
         response.set_cookie(
             key="session_token",
@@ -188,6 +228,13 @@ async def login(username: str = Form(...), password: str = Form(...)):
             max_age=86400 * 30
         )
         return response
+
+    # Record failed attempt
+    attempts, _ = failed_login_attempts.get(client_ip, (0, 0))
+    attempts += 1
+    lock_time = (now + 900) if attempts >= 5 else 0
+    failed_login_attempts[client_ip] = (attempts, lock_time)
+
     return HTMLResponse("""
         <script>
             alert("اسم المستخدم أو كلمة المرور غير صحيحة / Invalid credentials!");
@@ -211,6 +258,13 @@ async def upload_image(request: Request, image: UploadFile = File(...)):
     if ext not in [".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif"]:
         raise HTTPException(status_code=400, detail="Invalid image extension. Allowed: jpg, jpeg, png, webp, gif, avif")
         
+    # Enforce maximum 15MB file size limit
+    image.file.seek(0, 2)
+    file_size = image.file.tell()
+    image.file.seek(0)
+    if file_size > 15 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Image file exceeds maximum allowed size (15MB).")
+
     safe_name = f"{uuid.uuid4().hex[:12]}{ext}"
     file_path = os.path.join(UPLOADS_DIR, safe_name)
     
@@ -648,7 +702,7 @@ async def create_recipe(
                 "carbohydrates": "30g",
                 "fat": "12g"
             },
-            "ratings": {"average": 5.0, "count": 1}
+            "ratings": {"average": 5.0, "count": 1, "average_rating": 5.0, "total_reviews": 1}
         }
     }
 
@@ -941,3 +995,229 @@ async def dashboard_page(request: Request):
     if not is_authenticated(request):
         return RedirectResponse(url="/login")
     return HTMLResponse(get_template("dashboard.html"))
+
+
+# ================= DYNAMIC LIVE RECIPE FALLBACK RENDERER =================
+# Enables 0-second live publishing! If Astro SSG is still compiling in background,
+# this endpoint renders the recipe instantly with full CSS, Schema.org and AdSense.
+@app.get("/public-render/{slug:path}", response_class=HTMLResponse)
+async def public_render_recipe(slug: str):
+    clean_slug = slug.strip("/").split("/")[-1]
+    recipes = get_recipes_data()
+    found = None
+    for r in recipes:
+        if r.get("slug") == clean_slug or str(r.get("wp_post_id")) == clean_slug:
+            found = r
+            break
+            
+    if not found:
+        raise HTTPException(status_code=404, detail="Recipe not found")
+
+    title = found.get("title", "")
+    card_title = found.get("recipe_card_title") or title
+    rec = found.get("recipe", {})
+    desc = rec.get("description") or found.get("seo", {}).get("meta_description", "")
+    author_name = found.get("author", {}).get("name", "Maria") if isinstance(found.get("author"), dict) else "Maria"
+    pub_date = found.get("published_at", "")[:10]
+    
+    img_url = found.get("featured_image", {}).get("url", "") if isinstance(found.get("featured_image"), dict) else ""
+    if not img_url:
+        img_url = "https://images.unsplash.com/photo-1495521821757-a1efb6729352?auto=format&fit=crop&w=1200&q=80"
+        
+    category_name = "Dinner"
+    if found.get("categories") and len(found["categories"]) > 0:
+        c0 = found["categories"][0]
+        category_name = c0.get("name", "Dinner") if isinstance(c0, dict) else str(c0)
+
+    prep_time = rec.get("prep_time", "15 min")
+    cook_time = rec.get("cook_time", "25 min")
+    total_time = rec.get("total_time", "40 min")
+    servings = rec.get("yield", "4 servings")
+    cuisine = rec.get("cuisine", "American")
+    
+    # Ingredients list
+    ings_html = ""
+    for ing in rec.get("ingredients", []):
+        raw = ing.get("raw") if isinstance(ing, dict) else str(ing)
+        if raw:
+            ings_html += f'''
+            <li class="flex items-start gap-3 py-2 border-b border-stone-100 last:border-none">
+                <input type="checkbox" class="mt-1 w-4 h-4 rounded text-amber-600 focus:ring-amber-500 border-stone-300 cursor-pointer">
+                <span class="text-stone-700 text-sm leading-relaxed">{raw}</span>
+            </li>
+            '''
+
+    # Instructions list
+    steps_html = ""
+    for idx, step in enumerate(rec.get("instructions", [])):
+        text = step.get("text") if isinstance(step, dict) else str(step)
+        if text:
+            steps_html += f'''
+            <li class="flex items-start gap-4 py-3">
+                <span class="w-7 h-7 rounded-full bg-amber-500 text-white font-bold text-xs flex items-center justify-center flex-shrink-0 shadow-sm">{idx + 1}</span>
+                <p class="text-stone-700 text-sm sm:text-base leading-relaxed pt-0.5">{text}</p>
+            </li>
+            '''
+
+    article_html = found.get("article_html", f"<p>{desc}</p>")
+
+    # Schema JSON-LD
+    schema_json = json.dumps({
+        "@context": "https://schema.org",
+        "@type": "Recipe",
+        "name": card_title,
+        "headline": title,
+        "description": desc,
+        "image": [img_url],
+        "author": {"@type": "Person", "name": author_name},
+        "publisher": {"@type": "Organization", "name": "Make-Food", "url": "https://make-food.com"},
+        "datePublished": found.get("published_at", datetime.now().strftime("%Y-%m-%d")),
+        "prepTime": "PT15M",
+        "cookTime": "PT25M",
+        "totalTime": "PT40M",
+        "recipeYield": servings,
+        "recipeCategory": category_name,
+        "recipeCuisine": cuisine,
+        "recipeIngredient": [ing.get("raw", "") if isinstance(ing, dict) else str(ing) for ing in rec.get("ingredients", [])],
+        "aggregateRating": {
+            "@type": "AggregateRating",
+            "ratingValue": 5.0,
+            "reviewCount": 1
+        }
+    }, ensure_ascii=False)
+
+    html = f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{title} — Make-Food</title>
+    <meta name="description" content="{desc}">
+    <link rel="canonical" href="https://make-food.com/{clean_slug}/">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Playfair+Display:wght@700;900&display=swap" rel="stylesheet">
+    <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-9077963246978786" crossorigin="anonymous"></script>
+    <script type="application/ld+json">{schema_json}</script>
+    <style>
+        body {{ font-family: 'Plus Jakarta Sans', sans-serif; }}
+        h1, h2, h3, .font-serif {{ font-family: 'Playfair Display', Georgia, serif; }}
+        .prose p {{ margin-bottom: 1.25rem; line-height: 1.8; color: #44403c; }}
+        .prose h2 {{ font-size: 1.5rem; font-weight: 700; color: #1c1917; margin-top: 2rem; margin-bottom: 0.75rem; }}
+        .prose ul {{ list-style-type: disc; padding-left: 1.5rem; margin-bottom: 1.25rem; color: #44403c; }}
+    </style>
+</head>
+<body class="bg-stone-50 text-stone-900 min-h-screen flex flex-col">
+
+    <!-- Header Navigation -->
+    <header class="bg-white border-b border-stone-200 sticky top-0 z-40 shadow-sm">
+        <div class="max-w-5xl mx-auto px-4 h-20 flex items-center justify-between">
+            <a href="/" class="flex items-center gap-3">
+                <span class="w-10 h-10 rounded-full bg-amber-500 text-white flex items-center justify-center font-serif font-black text-xl shadow-md">✦</span>
+                <span class="font-serif text-2xl font-black text-stone-900 tracking-tight">Make-Food</span>
+            </a>
+            <div class="flex items-center gap-3">
+                <a href="/" class="px-4 py-2 rounded-full text-xs font-bold text-stone-700 hover:bg-stone-100 transition">← Back to Recipes</a>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="flex-1 max-w-4xl mx-auto px-4 py-8 w-full">
+        <!-- Breadcrumbs -->
+        <nav class="flex items-center gap-2 text-xs text-stone-400 font-semibold mb-6">
+            <a href="/" class="hover:text-amber-600">Home</a>
+            <span>›</span>
+            <span class="text-stone-600">{category_name}</span>
+            <span>›</span>
+            <span class="text-stone-800 truncate">{title}</span>
+        </nav>
+
+        <!-- Article Header -->
+        <div class="space-y-4 mb-8">
+            <span class="inline-block px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-amber-100 text-amber-800">
+                {category_name}
+            </span>
+            <h1 class="text-3xl sm:text-5xl font-serif font-black text-stone-900 leading-tight">
+                {title}
+            </h1>
+            <div class="flex items-center gap-4 text-xs text-stone-500 pt-1">
+                <span>By <strong class="text-stone-800">{author_name}</strong></span>
+                <span>•</span>
+                <span>{pub_date}</span>
+                <span>•</span>
+                <span>⏱ {total_time}</span>
+            </div>
+        </div>
+
+        <!-- Featured Image -->
+        <div class="rounded-3xl overflow-hidden shadow-lg mb-10 max-h-[480px] bg-stone-200">
+            <img src="{img_url}" alt="{title}" class="w-full h-full object-cover">
+        </div>
+
+        <!-- Article Intro & Story Content -->
+        <article class="prose max-w-none text-stone-700 text-base sm:text-lg mb-12">
+            {article_html}
+        </article>
+
+        <!-- Recipe Card Box -->
+        <div id="recipe-card" class="bg-white border-2 border-amber-200/80 rounded-3xl p-6 sm:p-10 shadow-xl mb-12">
+            <div class="border-b border-stone-200 pb-6 mb-6">
+                <span class="px-2.5 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-amber-500 text-white inline-block mb-2">Recipe Card</span>
+                <h2 class="text-2xl sm:text-3xl font-serif font-black text-stone-900">{card_title}</h2>
+                <p class="text-stone-500 text-sm mt-1">{desc}</p>
+                <div class="flex items-center gap-2 text-amber-500 text-sm mt-3">
+                    <span>★★★★★</span>
+                    <span class="text-xs font-bold text-stone-700">5.0 (1 rating)</span>
+                </div>
+            </div>
+
+            <!-- Times & Servings Grid -->
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 rounded-2xl bg-amber-50/60 border border-amber-100 mb-8 text-center text-xs">
+                <div>
+                    <span class="block text-stone-400 font-medium">Prep Time</span>
+                    <strong class="text-stone-800 text-sm font-bold">{prep_time}</strong>
+                </div>
+                <div>
+                    <span class="block text-stone-400 font-medium">Cook Time</span>
+                    <strong class="text-stone-800 text-sm font-bold">{cook_time}</strong>
+                </div>
+                <div>
+                    <span class="block text-stone-400 font-medium">Total Time</span>
+                    <strong class="text-stone-800 text-sm font-bold">{total_time}</strong>
+                </div>
+                <div>
+                    <span class="block text-stone-400 font-medium">Servings</span>
+                    <strong class="text-stone-800 text-sm font-bold">{servings}</strong>
+                </div>
+            </div>
+
+            <!-- Ingredients -->
+            <div class="mb-8">
+                <h3 class="text-xl font-bold text-stone-900 mb-4 flex items-center gap-2">
+                    <span>🛒</span> Ingredients
+                </h3>
+                <ul class="space-y-1">
+                    {ings_html}
+                </ul>
+            </div>
+
+            <!-- Instructions -->
+            <div>
+                <h3 class="text-xl font-bold text-stone-900 mb-4 flex items-center gap-2">
+                    <span>👩‍🍳</span> Step-by-Step Instructions
+                </h3>
+                <ol class="space-y-2">
+                    {steps_html}
+                </ol>
+            </div>
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="bg-white border-t border-stone-200 py-8 text-center text-xs text-stone-500">
+        <p>© 2026 Make-Food.com — All Rights Reserved.</p>
+    </footer>
+
+</body>
+</html>'''
+    return HTMLResponse(html)
